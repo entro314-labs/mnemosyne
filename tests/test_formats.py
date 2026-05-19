@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import json
 
-from claude_session_export.formats import _strip_markdown, render_jsonl, render_plain
-from claude_session_export.parser import Message, TextBlock, ToolResultBlock, ToolUseBlock
-from claude_session_export.render import RenderOptions, Turn, collect_turns
+from mnemosyne.formats import _strip_markdown, render_jsonl, render_plain
+from mnemosyne.parser import Message, TextBlock, ToolResultBlock, ToolUseBlock
+from mnemosyne.render import RenderOptions, Turn, collect_turns
 
 
 def _msg(role: str, blocks: list, uuid: str = "u", ts: str = "2026-01-01T00:00:00Z") -> Message:

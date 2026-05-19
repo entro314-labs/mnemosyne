@@ -10,7 +10,7 @@ import pytest
 if TYPE_CHECKING:
     from pathlib import Path
 
-from claude_session_export.parser import (
+from mnemosyne.parser import (
     Attachment,
     Message,
     TextBlock,

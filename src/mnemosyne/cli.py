@@ -13,7 +13,7 @@ from rich.console import Console
 from rich.prompt import IntPrompt, Prompt
 from rich.table import Table
 
-from claude_session_export.config import (
+from mnemosyne.config import (
     CLAUDE_PROJECTS,
     CONFIG_PATH,
     ProjectEntry,
@@ -24,15 +24,15 @@ from claude_session_export.config import (
     save_settings,
     sync_registry,
 )
-from claude_session_export.formats import Format, render_jsonl, render_plain
-from claude_session_export.parser import (
+from mnemosyne.formats import Format, render_jsonl, render_plain
+from mnemosyne.parser import (
     SessionSummary,
     list_session_files,
     project_dir_for_cwd,
     read_session,
     summarize_session,
 )
-from claude_session_export.render import Mode, RenderOptions, render_markdown
+from mnemosyne.render import Mode, RenderOptions, render_markdown
 
 _VALID_MODES = get_args(Mode)
 _VALID_FORMATS = get_args(Format)
@@ -1071,7 +1071,7 @@ def mcp() -> None:
     """Run the MCP server on stdio (for `syne install`-managed Claude Code plugin)."""
     # Lazy import: pulls in mcp/anyio/uvicorn which we don't need for the
     # other subcommands.
-    from claude_session_export.mcp_server import run  # noqa: PLC0415
+    from mnemosyne.mcp_server import run  # noqa: PLC0415
 
     run()
 
@@ -1082,10 +1082,7 @@ def install(
         Path | None,
         Parameter(
             name=["--install-path"],
-            help=(
-                "Override default plugin install location "
-                "(~/.claude/plugins/mnemosyne)."
-            ),
+            help=("Override default plugin install location (~/.claude/plugins/mnemosyne)."),
         ),
     ] = None,
 ) -> None:
@@ -1095,7 +1092,7 @@ def install(
     registers a local-directory marketplace so Claude Code's `/plugin install`
     flow can find it. Re-running this command updates the plugin in place.
     """
-    from claude_session_export.installer import (  # noqa: PLC0415
+    from mnemosyne.installer import (  # noqa: PLC0415
         DEFAULT_INSTALL_PATH,
         install_plugin,
         print_post_install_instructions,
@@ -1114,7 +1111,7 @@ def uninstall(
     ] = None,
 ) -> None:
     """Remove the plugin sidecar from ~/.claude/plugins/ and de-register the marketplace."""
-    from claude_session_export.installer import (  # noqa: PLC0415
+    from mnemosyne.installer import (  # noqa: PLC0415
         DEFAULT_INSTALL_PATH,
         uninstall_plugin,
     )

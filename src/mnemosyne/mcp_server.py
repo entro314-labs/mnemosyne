@@ -20,19 +20,19 @@ from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
-from claude_session_export.config import (
+from mnemosyne.config import (
     CLAUDE_PROJECTS,
     ProjectEntry,
     load_settings,
     sync_registry,
 )
-from claude_session_export.parser import (
+from mnemosyne.parser import (
     list_session_files,
     project_dir_for_cwd,
     read_session,
     summarize_session,
 )
-from claude_session_export.render import Mode, RenderOptions, render_markdown
+from mnemosyne.render import Mode, RenderOptions, render_markdown
 
 mcp = FastMCP("mnemosyne")
 

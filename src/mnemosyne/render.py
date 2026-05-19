@@ -19,7 +19,7 @@ import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
-from claude_session_export.parser import (
+from mnemosyne.parser import (
     Attachment,
     Message,
     TextBlock,
@@ -33,7 +33,7 @@ from claude_session_export.parser import (
 if TYPE_CHECKING:
     from collections.abc import Iterable
 
-    from claude_session_export.parser import Event
+    from mnemosyne.parser import Event
 
 
 Mode = Literal["transcript", "compact", "full"]

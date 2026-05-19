@@ -38,7 +38,7 @@ def _asset_root() -> Path:
     """
     # importlib.resources.files returns a Traversable; for a real-fs package
     # (our case), it's backed by a Path.
-    return Path(str(resources.files("claude_session_export") / "plugin_assets"))
+    return Path(str(resources.files("mnemosyne") / "plugin_assets"))
 
 
 def _copy_tree(src: Path, dst: Path) -> int:
@@ -163,14 +163,12 @@ def print_post_install_instructions(result: InstallResult, *, console) -> None:
 
     console.print("\n[bold]Next steps in Claude Code:[/bold]")
     console.print("  1. Restart Claude Code (so it picks up the new marketplace).")
-    console.print(
-        "  2. Run: [cyan]/plugin install mnemosyne@mnemosyne[/cyan]"
-    )
+    console.print("  2. Run: [cyan]/plugin install mnemosyne@mnemosyne[/cyan]")
     console.print("  3. Try: [cyan]/history[/cyan]  or  [cyan]/recall <topic>[/cyan]")
 
 
 def main() -> int:  # pragma: no cover — wired through CLI, not directly invoked
-    """Allow ``python -m claude_session_export.installer`` for debugging."""
+    """Allow ``python -m mnemosyne.installer`` for debugging."""
     from rich.console import Console  # noqa: PLC0415
 
     console = Console()

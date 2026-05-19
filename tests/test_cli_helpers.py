@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-from claude_session_export.cli import (
+from mnemosyne.cli import (
     _apply_filters,
     _filename_for,
     _resolve_filenames,
     _slugify,
 )
-from claude_session_export.parser import SessionSummary
+from mnemosyne.parser import SessionSummary
 
 
 def _summary(

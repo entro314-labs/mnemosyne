@@ -1,4 +1,4 @@
-from claude_session_export.cli import app
+from mnemosyne.cli import app
 
 if __name__ == "__main__":
     app()

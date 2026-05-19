@@ -219,7 +219,7 @@ canonical — `rm sessions.db` would lose nothing.
 ## Layout
 
 ```
-src/claude_session_export/
+src/mnemosyne/
   parser.py         # JSONL → typed events (Message / Attachment / *Block)
   render.py         # events → markdown (3 modes + same-role coalescing) + collect_turns
   formats.py        # render_jsonl + render_plain (share collect_turns)

@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import re
 
-from claude_session_export.parser import Message, TextBlock
-from claude_session_export.render import RenderOptions, _inject_anchors, render_markdown
+from mnemosyne.parser import Message, TextBlock
+from mnemosyne.render import RenderOptions, _inject_anchors, render_markdown
 
 
 def _msg(role: str, text: str, ts: str = "2026-01-01T00:00:00Z") -> Message:

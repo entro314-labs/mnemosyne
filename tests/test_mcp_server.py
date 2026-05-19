@@ -12,8 +12,8 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from claude_session_export import config, mcp_server, parser
-from claude_session_export.mcp_server import (
+from mnemosyne import config, mcp_server, parser
+from mnemosyne.mcp_server import (
     get_session,
     get_session_summary,
     list_projects,

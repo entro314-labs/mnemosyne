@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-from claude_session_export.parser import (
+from mnemosyne.parser import (
     Message,
     TextBlock,
     ToolResultBlock,
     ToolUseBlock,
 )
-from claude_session_export.render import (
+from mnemosyne.render import (
     RenderOptions,
     _coalesce_same_role,
     _scrub_ack,

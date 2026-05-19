@@ -15,12 +15,12 @@ import json
 import re
 from typing import TYPE_CHECKING, Literal
 
-from claude_session_export.render import RenderOptions, collect_turns
+from mnemosyne.render import RenderOptions, collect_turns
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
 
-    from claude_session_export.parser import Event
+    from mnemosyne.parser import Event
 
 
 Format = Literal["markdown", "jsonl", "plain"]
