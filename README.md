@@ -1,5 +1,7 @@
 # mnemosyne
 
+Mnemosyne is a Titaness in Greek mythology. She is the personification of memory and remembrance, and a fitting namesake for a project that serves as a clean, structured layer on top of the raw conversation logs produced by Claude Code. Mnemosyne takes the noisy, append-only JSONL files that Claude Code generates and transforms them into human- and agent-readable formats, while also providing tools for browsing, exporting, merging, and searching through past sessions.
+
 > Memory + context suite for Claude Code — clean transcript exports, cross-session merge, project archive, MCP server, and a Claude Code plugin. For humans and agents.
 
 Claude Code stores every conversation under
