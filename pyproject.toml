@@ -1,0 +1,90 @@
+[project]
+name = "mnemosyne"
+version = "1.2.0"
+description = "Memory + context suite for Claude Code: clean transcript exports (markdown/JSONL/plain), cross-session merge, project archive, plus an MCP server and a Claude Code plugin."
+readme = "README.md"
+requires-python = ">=3.13"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [
+    { name = "Dominikos Pritis", email = "idominikos@outlook.com" },
+]
+keywords = [
+    "claude",
+    "claude-code",
+    "anthropic",
+    "transcript",
+    "export",
+    "jsonl",
+    "markdown",
+    "cli",
+]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development",
+    "Topic :: Text Processing :: Markup :: Markdown",
+    "Topic :: Utilities",
+]
+dependencies = [
+    "cyclopts>=5.0.0a6",
+    "mcp>=1.27.1",
+    "rich>=15.0",
+    "tomli-w>=1.2.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/entro314-labs/mnemosyne"
+Repository = "https://github.com/entro314-labs/mnemosyne"
+Issues = "https://github.com/entro314-labs/mnemosyne/issues"
+
+[project.scripts]
+syne = "claude_session_export.cli:app"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/claude_session_export"]
+
+# Include the plugin asset templates so `syne install` can deploy them at runtime.
+[tool.hatch.build.targets.wheel.force-include]
+"src/claude_session_export/plugin_assets" = "claude_session_export/plugin_assets"
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "src/claude_session_export",
+    "README.md",
+    "LICENSE",
+    "pyproject.toml",
+]
+
+[tool.uv]
+# cyclopts 5.x is currently published as an alpha; allow pre-releases without
+# requiring --prerelease=allow on every invocation.
+prerelease = "allow"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.3",
+    "ruff>=0.15.13",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "RUF", "SIM", "TCH", "PTH", "PL"]
+ignore = ["PLR0913", "PLR2004"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

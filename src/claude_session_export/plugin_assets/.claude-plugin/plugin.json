@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-plugin.json",
+  "name": "mnemosyne",
+  "version": "1.2.0",
+  "description": "Browse, search, and recall your Claude Code session history. Adds slash commands and an MCP server that lets Claude reach into past conversations across all your projects.",
+  "author": {
+    "name": "Dominikos Pritis",
+    "email": "idominikos@outlook.com"
+  },
+  "homepage": "https://github.com/entro314-labs/mnemosyne",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/entro314-labs/mnemosyne.git"
+  },
+  "license": "MIT"
+}

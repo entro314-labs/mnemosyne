@@ -1,0 +1,4 @@
+{
+  "$comment": "Opt-in SessionStart hook. Inactive by default — this file is shipped empty so that enabling auto-recall is an explicit, user-driven step. Populate the `hooks` array (e.g., with a SessionStart entry that calls `syne mcp` via stdio or a small shim that prints the last session summary) to activate. See README → 'Optional: session-start auto-recall' for details.",
+  "hooks": []
+}

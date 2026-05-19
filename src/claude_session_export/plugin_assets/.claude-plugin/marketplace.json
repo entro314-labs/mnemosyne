@@ -1,0 +1,19 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "mnemosyne",
+  "description": "Session history tools for Claude Code — single-plugin marketplace.",
+  "owner": {
+    "name": "Dominikos Pritis",
+    "email": "idominikos@outlook.com"
+  },
+  "plugins": [
+    {
+      "name": "mnemosyne",
+      "description": "Browse, search, and recall your Claude Code session history via slash commands and an MCP server.",
+      "version": "1.2.0",
+      "source": "./",
+      "category": "productivity",
+      "homepage": "https://github.com/entro314-labs/mnemosyne"
+    }
+  ]
+}
