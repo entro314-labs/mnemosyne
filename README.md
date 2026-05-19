@@ -63,7 +63,7 @@ Run `syne` with no arguments for an interactive picker. Otherwise:
 
 ```bash
 syne list                            # sessions for the cwd's project
-syne export <id-or-prefix>           # single session → <project>/.claude-exports/
+syne export <id-or-prefix>           # single session → <project>/.mnemosyne-exports/
 syne export-all                      # every session in the project
 syne merge <id1> <id2> -o out.md     # combine specific sessions
 syne merge --all-from <project>      # combine every session from a project
@@ -89,7 +89,7 @@ syne mcp                             # MCP server on stdio (used by plugin)
 A `syne export-all` lands like this:
 
 ```
-<project>/.claude-exports/
+<project>/.mnemosyne-exports/
 ├── fix-godot-spawn-location.md          # rendered transcript
 ├── fix-godot-spawn-location.meta.json   # per-session metadata sidecar
 ├── …
@@ -178,7 +178,7 @@ Persistent state at `~/.config/mnemosyne/config.toml`:
 
 ```toml
 [defaults]
-output_dir = "{local_path}/.claude-exports"   # {local_path} | {slug} | {cwd}
+output_dir = "{local_path}/.mnemosyne-exports"   # {local_path} | {slug} | {cwd}
 mode = "transcript"                           # transcript | compact | full
 include_thinking = false
 include_attachments = false
@@ -205,7 +205,7 @@ authoritative, not heuristic.
 
 **Files all the way down.** The only persistent state this project creates:
 
-- Cleaned exports under `<project>/.claude-exports/` (.md + .meta.json + index.json)
+- Cleaned exports under `<project>/.mnemosyne-exports/` (.md + .meta.json + index.json)
 - TOML registry at `~/.config/mnemosyne/config.toml`
 
 No database. The raw JSONL is the source of truth, owned by Claude Code; our

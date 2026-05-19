@@ -14,7 +14,7 @@ You are being asked to export session(s) for the current project.
    filesystem side-effects):
    - Single session: `syne export <id> [--mode <mode>]`
    - All sessions: `syne export-all [--mode <mode>]`
-3. Both commands write to `<project>/.claude-exports/` by default. Report
+3. Both commands write to `<project>/.mnemosyne-exports/` by default. Report
    the output path back to the user along with the filenames written.
 4. If you exported to a git-tracked project, suggest adding
-   `.claude-exports/` to `.gitignore` (unless it's already there).
+   `.mnemosyne-exports/` to `.gitignore` (unless it's already there).

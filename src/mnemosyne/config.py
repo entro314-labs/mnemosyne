@@ -19,7 +19,7 @@ CLAUDE_PROJECTS = Path.home() / ".claude" / "projects"
 
 @dataclass(slots=True)
 class Defaults:
-    output_dir: str = "{local_path}/.claude-exports"
+    output_dir: str = "{local_path}/.mnemosyne-exports"
     mode: str = "transcript"  # transcript | compact | full
     include_thinking: bool = False
     include_attachments: bool = False
