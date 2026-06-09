@@ -149,6 +149,35 @@ def test_full_keeps_tool_use_json_input() -> None:
     assert "file.md" in md
 
 
+def test_full_strips_ansi_and_collapses_progress_in_tool_result() -> None:
+    noisy = "\x1b[32mInstalling\x1b[0m\r 10%\r 90%\r100% complete"
+    events = [
+        _msg("assistant", [ToolUseBlock(id="t1", name="Bash", input={"command": "npm i"})]),
+        _msg("user", [ToolResultBlock(tool_use_id="t1", content=noisy)]),
+    ]
+    md = render_markdown(events, opts=RenderOptions(mode="full"))
+    assert "\x1b" not in md  # ansi gone
+    assert "10%" not in md  # progress frames collapsed
+    assert "100% complete" in md  # final frame kept
+
+
+def test_full_truncates_base64_in_tool_result() -> None:
+    blob = "AaBbCc0123456789+/" * 20  # 360 chars, base64-like
+    events = [
+        _msg("assistant", [ToolUseBlock(id="t1", name="Bash", input={"command": "cat img"})]),
+        _msg("user", [ToolResultBlock(tool_use_id="t1", content=f"data {blob} end")]),
+    ]
+    md = render_markdown(events, opts=RenderOptions(mode="full"))
+    assert blob not in md
+    assert "base64 chars]" in md
+
+
+def test_render_collapses_excess_blank_lines() -> None:
+    events = [_msg("user", [TextBlock("first\n\n\n\n\nsecond")])]
+    md = render_markdown(events, opts=RenderOptions(mode="transcript"))
+    assert "\n\n\n" not in md  # no run of 3+ newlines survives
+
+
 def test_tool_result_only_user_turn_has_no_user_header() -> None:
     """When a user turn contains only tool_result blocks (parallel-tool fan-in),
     we shouldn't render a "User" header — the tool-result markers already

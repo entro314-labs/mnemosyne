@@ -33,11 +33,16 @@ Requires Python 3.13+ and [uv](https://github.com/astral-sh/uv).
 
 ```bash
 # 1. install the package — puts `syne` and `syne mcp` on PATH globally
-uv tool install git+https://github.com/entro314-labs/mnemosyne
+uv tool install mnemosyne-cc
+# …or straight from source for the bleeding edge:
+# uv tool install git+https://github.com/entro314-labs/mnemosyne
 
 # 2. (optional) wire the Claude Code plugin sidecar — adds slash commands + skill
 syne install
 ```
+
+The PyPI distribution is **`mnemosyne-cc`** (the bare `mnemosyne` name is taken by
+an unrelated project); the import package and the `syne` command are still `mnemosyne`.
 
 Step 2 copies the plugin into `~/.claude/plugins/mnemosyne/` and
 registers it. Then in Claude Code: `/plugin install
@@ -45,8 +50,8 @@ mnemosyne@mnemosyne`. The CLI works fine without
 step 2; step 2 is only needed if you want `/recall`, `/history`, `/summon`,
 `/export` slash commands inside Claude Code.
 
-Update later: `uv tool upgrade mnemosyne && syne install`.
-Uninstall: `syne uninstall && uv tool uninstall mnemosyne`.
+Update later: `uv tool upgrade mnemosyne-cc && syne install`.
+Uninstall: `syne uninstall && uv tool uninstall mnemosyne-cc`.
 
 ## The three layers
 
@@ -61,7 +66,9 @@ filtering.
 
 ## CLI
 
-Run `syne` with no arguments for an interactive picker. Otherwise:
+Run `syne` with no arguments. When the current directory is a known Claude Code
+workspace, it loads that workspace's sessions directly — no project chooser.
+Run it from anywhere else (or pass `--pick`) to choose from all projects. Otherwise:
 
 ```bash
 syne list                            # sessions for the cwd's project
@@ -124,6 +131,14 @@ Unconditional cleanups, all modes:
 - `<task-notification>` XML unwrapped to summary+result.
 - System wrappers stripped: `<system-reminder>`, `<ide_opened_file>`, `<ide_selection>`, `<command-name>`, `<local-command-*>`.
 - JSON-escape-encoded paste-ins unescaped (`\n\n` → real newlines) when the text looks serialized.
+
+Deterministic machine-noise scrub on captured tool output (compact/full), pure
+and idempotent — same input always yields the same output (see `clean.py`):
+
+- ANSI/VT escape sequences removed (colour codes, cursor moves, OSC titles).
+- Carriage-return progress bars collapsed to their final frame (`npm install`, download spinners).
+- Base64 / data-URI blobs truncated to a `…[+N base64 chars]` stub (pasted screenshots, embedded binaries).
+- Whitespace normalised on every document: trailing spaces trimmed, runs of 3+ blank lines collapsed.
 
 ## Output formats
 
@@ -221,6 +236,7 @@ canonical — `rm sessions.db` would lose nothing.
 ```
 src/mnemosyne/
   parser.py         # JSONL → typed events (Message / Attachment / *Block)
+  clean.py          # deterministic noise passes (ANSI / CR / base64 / whitespace)
   render.py         # events → markdown (3 modes + same-role coalescing) + collect_turns
   formats.py        # render_jsonl + render_plain (share collect_turns)
   config.py         # TOML settings + project registry + git enrichment
@@ -230,7 +246,7 @@ src/mnemosyne/
   plugin_assets/    # bundled plugin templates (.claude-plugin/, skills/, commands/, .mcp.json)
 tests/
   test_parser.py / test_render.py / test_formats.py / test_cli_helpers.py
-  test_installer.py / test_mcp_server.py
+  test_clean.py / test_workspace.py / test_installer.py / test_mcp_server.py
 ```
 
 ## License

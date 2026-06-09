@@ -363,6 +363,33 @@ def _render_project_table(rows: list[tuple[ProjectEntry, int]]) -> None:
     console.print(table)
 
 
+def _detect_cwd_project(
+    settings: Settings,
+    *,
+    cwd: Path | None = None,
+    claude_root: Path | None = None,
+) -> ProjectEntry | None:
+    """Return the registry entry for the workspace the CLI was invoked from.
+
+    Maps the current working directory to its ``~/.claude/projects/<slug>``
+    directory; if that directory exists and holds at least one session, ``syne``
+    (no args) can skip the project picker and jump straight to this workspace's
+    sessions. Returns ``None`` when the cwd is not a known Claude Code workspace,
+    so the caller falls back to the interactive project chooser.
+
+    A synthesized entry is returned when the workspace has sessions on disk but
+    has not yet been recorded in the registry.
+    """
+    cwd = cwd or Path.cwd()
+    candidate = project_dir_for_cwd(cwd, claude_home=claude_root)
+    if not candidate.is_dir() or not any(candidate.glob("*.jsonl")):
+        return None
+    entry = settings.projects.get(candidate.name)
+    if entry is not None:
+        return entry
+    return ProjectEntry(slug=candidate.name, local_path=str(cwd), friendly_name=cwd.name)
+
+
 def _render_session_table(summaries: list[SessionSummary]) -> None:
     table = Table(title="Sessions", header_style="bold")
     table.add_column("#", justify="right")
@@ -387,25 +414,48 @@ def interactive(
         Mode | None,
         Parameter(help="Override the saved mode default."),
     ] = None,
+    pick: Annotated[
+        bool,
+        Parameter(
+            name=["--pick"],
+            help="Force the project chooser even when run from a known workspace.",
+        ),
+    ] = False,
 ) -> None:
-    """Pick a project, pick sessions, pick output dir, export. Updates the registry."""
+    """Pick sessions, pick output dir, export. Updates the registry.
+
+    When invoked from a directory that maps to a known Claude Code workspace, the
+    project chooser is skipped and that workspace loads directly. Pass ``--pick``
+    (or run from a non-workspace directory) to choose from all projects instead.
+    """
     settings = load_settings()
     sync_registry(settings)
     save_settings(settings)
 
-    rows = _list_projects_with_sessions(settings)
-    if not rows:
-        err_console.print(f"No Claude Code projects with sessions found under {CLAUDE_PROJECTS}.")
-        return
+    entry = None if pick else _detect_cwd_project(settings)
+    if entry is not None:
+        console.print(
+            f"[dim]workspace:[/dim] [cyan]{entry.friendly_name or entry.slug}[/cyan]"
+            f"  [dim]{entry.local_path or Path.cwd()}[/dim]  "
+            f"[dim](run with --pick to choose another)[/dim]"
+        )
+    else:
+        rows = _list_projects_with_sessions(settings)
+        if not rows:
+            err_console.print(
+                f"No Claude Code projects with sessions found under {CLAUDE_PROJECTS}."
+            )
+            return
 
-    _render_project_table(rows)
-    choice = IntPrompt.ask(
-        "Pick a project",
-        choices=[str(i) for i in range(1, len(rows) + 1)],
-        default=1,
-        show_choices=False,
-    )
-    entry, _ = rows[choice - 1]
+        _render_project_table(rows)
+        choice = IntPrompt.ask(
+            "Pick a project",
+            choices=[str(i) for i in range(1, len(rows) + 1)],
+            default=1,
+            show_choices=False,
+        )
+        entry, _ = rows[choice - 1]
+
     slug_dir = CLAUDE_PROJECTS / entry.slug
 
     summaries = sorted(

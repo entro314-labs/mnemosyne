@@ -5,6 +5,54 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.0] — 2026-06-09
+
+Higher-fidelity output through deterministic noise removal, plus a friction-free
+default that loads the current directory's workspace without a chooser.
+
+### Added — deterministic cleanup
+- **`clean.py`** — a new module of pure, idempotent, language-agnostic
+  noise-reduction passes (same input always yields the same output; running a
+  pass over its own output is a no-op). Inspired by repomix's deterministic
+  cleanup pipeline, adapted from code to conversation transcripts:
+  - **`strip_ansi`** — removes ANSI/VT escape sequences (colour codes, cursor
+    moves, OSC titles) left in tool output captured from a TTY.
+  - **`collapse_carriage_returns`** — emulates a terminal and keeps only the
+    final frame of `\r`-overwrite progress bars (`npm install`, download
+    spinners), normalising CRLF to `\n` first so real line breaks survive.
+  - **`truncate_base64`** — shrinks data-URI and standalone base64 blobs
+    (pasted screenshots, embedded binaries) to a `…[+N base64 chars]` stub,
+    using a digit + mixed-case heuristic to avoid false positives on long hex
+    or identifiers.
+  - **`normalize_whitespace`** — right-trims every line and collapses runs of
+    3+ blank lines (the gaps left when wrapper tags / ack lines are stripped)
+    without disturbing intentional paragraph separation.
+- These compose into `scrub_tool_output` (applied to captured tool output in
+  compact/full modes) and a final `normalize_whitespace` pass over every
+  rendered document — markdown, and the shared `collect_turns` path feeding
+  JSONL and plain. User prose also gets base64 truncation for pasted images.
+- Verified on 178 real sessions: 57 with ANSI, 173 with carriage returns, 19
+  with base64 → **zero residual noise** after rendering.
+
+### Added — workspace auto-load
+- **`syne` (no args) now loads the current directory's workspace directly**
+  when the cwd maps to a known Claude Code project with sessions — skipping the
+  project chooser and jumping straight to its sessions. Run from a
+  non-workspace directory, or pass **`--pick`**, to choose from all projects.
+  A synthesized entry is used when the workspace has sessions on disk but isn't
+  yet in the registry.
+
+### Tests
+- `test_clean.py` (deterministic + idempotency coverage for every pass) and
+  `test_workspace.py` (cwd → workspace detection), plus render-level
+  integration tests that the cleanup flows through `render_markdown`.
+
+### Packaging
+- **First PyPI release, published as `mnemosyne-cc`** — the bare `mnemosyne`
+  name is held by an unrelated project. The import package and the `syne`
+  command are unchanged; only the `pip install` / `uv tool` name differs
+  (`uv tool install mnemosyne-cc`, `uv tool upgrade mnemosyne-cc`).
+
 ## [1.2.0] — 2026-05-19
 
 Memory + context suite. Adds the access patterns needed to use the cleaned
@@ -129,6 +177,7 @@ JSONL files to readable markdown for humans and agents.
 - 41 tests, GitHub Actions CI (lint + format + tests on ubuntu and macos),
   MIT license, full publish metadata.
 
+[1.3.0]: https://github.com/entro314-labs/mnemosyne/releases/tag/v1.3.0
 [1.2.0]: https://github.com/entro314-labs/mnemosyne/releases/tag/v1.2.0
 [1.1.0]: https://github.com/entro314-labs/mnemosyne/releases/tag/v1.1.0
 [1.0.0]: https://github.com/entro314-labs/mnemosyne/releases/tag/v1.0.0

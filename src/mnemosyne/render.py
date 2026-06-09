@@ -19,6 +19,11 @@ import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
+from mnemosyne.clean import (
+    normalize_whitespace,
+    scrub_tool_output,
+    truncate_base64,
+)
 from mnemosyne.parser import (
     Attachment,
     Message,
@@ -87,6 +92,16 @@ def _scrub_ack(content: str) -> str:
     return content.strip()
 
 
+def _clean_result(content: str) -> str:
+    """Ack-line removal + deterministic machine-noise scrub for captured tool output.
+
+    Layers ``mnemosyne.clean.scrub_tool_output`` (ANSI stripping, carriage-return
+    progress-bar collapse, base64 truncation, whitespace normalisation) on top of
+    the boilerplate ack-line removal.
+    """
+    return scrub_tool_output(_scrub_ack(content))
+
+
 def _truncate(text: str, limit: int) -> str:
     if limit <= 0 or len(text) <= limit:
         return text
@@ -107,6 +122,8 @@ def _render_user_text(text: str, opts: RenderOptions) -> str:
     body = _unescape_if_encoded(text)
     if not opts.include_reminders:
         body = _strip_reminder_wrappers(body)
+    # Pasted screenshots / data URIs are pure noise in prose — shrink them.
+    body = truncate_base64(body)
     return body.strip()
 
 
@@ -155,7 +172,7 @@ def _compact_bash(call: ToolUseBlock, result: ToolResultBlock | None, opts: Rend
     if result is None:
         return head
     err = " ❌" if result.is_error else ""
-    body = _truncate(_scrub_ack(result.content), opts.max_tool_result_chars)
+    body = _truncate(_clean_result(result.content), opts.max_tool_result_chars)
     if not body.strip():
         return f"{head}{err}"
     return f"{head}{err}\n\n{_fence(body)}"
@@ -168,7 +185,7 @@ def _render_full_tool_use(call: ToolUseBlock, opts: RenderOptions) -> str:
 
 
 def _render_full_tool_result(b: ToolResultBlock, opts: RenderOptions) -> str | None:
-    body = _scrub_ack(b.content)
+    body = _clean_result(b.content)
     if not body.strip():
         return None
     body = _truncate(body, opts.max_tool_result_chars)
@@ -317,7 +334,7 @@ def collect_turns(
         )
         if not parts:
             continue
-        body = "\n\n".join(parts)
+        body = normalize_whitespace("\n\n".join(parts))
         if _is_tool_result_only_user(ev):
             if turns:
                 turns[-1] = Turn(
@@ -449,4 +466,4 @@ def render_markdown(
     chunks = _coalesce_same_role(chunks)
     if session_id:
         chunks = _inject_anchors(chunks, session_id)
-    return "\n\n---\n\n".join(chunks) + "\n"
+    return normalize_whitespace("\n\n---\n\n".join(chunks)) + "\n"
