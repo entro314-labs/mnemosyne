@@ -1,0 +1,76 @@
+name: release
+
+# Publish to PyPI when a GitHub Release is published.
+#
+# Uses PyPI Trusted Publishing (OIDC) — no API token is stored anywhere. The
+# `id-token: write` permission lets the job mint a short-lived OIDC token that
+# uv exchanges with PyPI for a one-time upload credential.
+#
+# One-time PyPI setup (before the first release runs):
+#   https://pypi.org/manage/account/publishing/ → add a "pending publisher"
+#     PyPI Project Name: mnemosyne-cc
+#     Owner:             entro314-labs
+#     Repository name:   mnemosyne
+#     Workflow name:     release.yml
+#     Environment name:  pypi
+# Once the first release publishes, the pending publisher becomes a regular one.
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Build & publish to PyPI
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/mnemosyne-cc
+    permissions:
+      id-token: write # mint the OIDC token for Trusted Publishing
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Pin Python
+        run: uv python install 3.13
+
+      - name: Sync dependencies
+        run: uv sync --all-groups
+
+      # Re-run the full gate so a broken commit can never ship a release.
+      - name: Ruff (lint)
+        run: uv run ruff check src tests
+
+      - name: Ruff (format)
+        run: uv run ruff format --check src tests
+
+      - name: Pytest
+        run: uv run pytest -q
+
+      - name: Guard — release tag must match the package version
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          pkg="$(uv version --short)"
+          echo "release tag: ${tag} | package version: ${pkg}"
+          if [ "${tag}" != "${pkg}" ]; then
+            echo "::error::Release tag (${tag}) does not match pyproject version (${pkg}). Bump one to match."
+            exit 1
+          fi
+
+      - name: Build sdist + wheel
+        run: uv build
+
+      - name: Publish to PyPI (Trusted Publishing — no token)
+        run: uv publish --trusted-publishing always dist/*.whl dist/*.tar.gz
