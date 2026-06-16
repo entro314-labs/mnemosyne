@@ -29,6 +29,8 @@ that actually matter.
 | "Give me JSONL to feed into an embedding pipeline" | `syne export-all --format jsonl` |
 | "Plain text I can paste into another LLM" | `syne export-all --format plain` |
 | "Let Claude itself search and load my past sessions and memories" | `syne install` (the MCP server + plugin) |
+| "Tell every agent (Claude, opencode, Codex…) to self-align from its own memory" | `syne align` |
+| "A small recall brief I can pipe into a session-start hook" | `syne recall --recent` |
 
 ## Install (two commands)
 
@@ -61,7 +63,7 @@ Uninstall: `syne uninstall && uv tool uninstall mnemosyne-cc`.
 | Layer | Consumer | What it does |
 | --- | --- | --- |
 | **CLI (`syne`)** | You, in a terminal | Browse, export, merge, search. |
-| **MCP server (`syne mcp`)** | Any agent (incl. Claude Code) | 11 read-only tools over transcripts, memories, and subagents. |
+| **MCP server (`syne mcp`)** | Any agent (incl. Claude Code) | 13 read-only tools: self-align, transcripts, memories, handoffs, subagents. |
 | **Claude Code plugin** | Claude Code specifically | `session-history` skill + `/recall`, `/memories`, `/history`, `/summon`, `/export` slash commands — wires Claude to its own past via the MCP. |
 
 All three share the same parser, renderer, project discovery, and noise
@@ -79,6 +81,8 @@ syne export <id-or-prefix>           # single session → <project>/.mnemosyne-e
 syne export-all                      # every session in the project
 syne merge <id1> <id2> -o out.md     # combine specific sessions
 syne merge --all-from <project>      # combine every session from a project
+syne recall [query] [--memories]     # small capped recall brief → stdout (hooks / non-MCP agents)
+syne align                           # write the self-alignment directive into CLAUDE.md + AGENTS.md
 syne projects                        # registry of all known projects
 syne config-show                     # current settings file
 syne install / syne uninstall         # plugin sidecar
@@ -192,14 +196,17 @@ and idempotent — same input always yields the same output (see `clean.py`):
 
 ## MCP server
 
-`syne mcp` speaks MCP over stdio. Eleven read-only tools — six over transcripts,
-three over the curated memory layer, two over hidden subagent transcripts:
+`syne mcp` speaks MCP over stdio. Thirteen read-only tools — one aggregated
+self-align entry point, plus tools over transcripts, the curated memory layer,
+handoff digests, and hidden subagent transcripts:
 
 | Tool | Purpose |
 | --- | --- |
+| `self_align(query?, project?, max_chars=6000)` | **Start here.** One bounded packet: memory matches/index + recent summaries + transcript snippets + `suggested_next` calls + guidance. No full bodies/transcripts — pull those via the suggestions. |
 | `list_projects()` | Every project with sessions, sorted most-recent-used. |
 | `list_sessions(project?, limit=20)` | Newest sessions in a project. |
 | `get_session_summary(session_id, project?)` | Cheap header — no transcript loading. |
+| `get_session_handoff(session_id, project?)` | The compaction handoff digest (Title / Current State / Next steps) — "where we left off", cheaper than a transcript. |
 | `get_session(session_id, project?, mode="transcript", max_tool_chars=2000)` | Rendered markdown for one session. |
 | `recall_recent(project?, limit=5)` | Last N session summaries for the current project. |
 | `search_sessions(query, project?, max_results=10, context_chars=200)` | Case-insensitive substring search across rendered transcripts. |
@@ -239,6 +246,60 @@ Plus a `session-history` skill that teaches Claude *when* to reach for the
 MCP tools (e.g., "have I done X before?" → `search_sessions`; "what's the plan
 for Y?" → `search_memories`; "how did that audit reach its finding?" →
 `list_subagents` → `get_subagent`).
+
+## Self-alignment across tools
+
+The archive only helps if the agent actually consults it — and consults it
+*safely*. `syne align` writes a small, always-loaded **directive** into a
+project's instruction files so any agent knows the archive exists, **when** to
+recall (trigger-gated, never eager), and the guardrails that keep recall from
+*amplifying* drift.
+
+```bash
+syne align                 # write the directive into ./CLAUDE.md and ./AGENTS.md
+syne align --export        # print the block to stdout instead (manual placement / migration)
+syne align --remove        # strip it again (idempotent, marker-scoped)
+```
+
+- **Two files, by design.** `AGENTS.md` is the cross-tool open standard read by
+  opencode, Codex, Cursor, Copilot, Windsurf, and Gemini; `CLAUDE.md` is for
+  Claude Code, which does **not** read `AGENTS.md`. Writing both reaches everyone.
+- **Idempotent + marker-scoped.** Only the
+  `<!-- mnemosyne:begin -->`…`<!-- mnemosyne:end -->` span is ever touched;
+  re-running is a no-op; your own content is never clobbered.
+- **Gated on availability.** The directive is written only when mnemosyne is
+  actually wired for the project (plugin installed, exports on disk, or a Claude
+  session history) — never a directive pointing at tools that aren't there.
+  `--force` overrides.
+
+The directive is **engineered to reduce drift**, not feed it: don't auto-load
+every session; cheapest-first with hard stops (≤1–3 sessions, never `full` mode);
+trust order **curated memories → session summary → targeted search → full
+transcript LAST** (raw transcripts keep dead-ends — don't re-adopt them); treat
+every recall as **dated evidence** the live code overrides; stay project-scoped;
+a past decision is context, not a commitment; never fabricate. On Claude Code the
+directive is a thin router that defers to the richer `session-history` skill.
+
+### Optional: session-start auto-recall
+
+For agents that can't speak MCP — or for a proactive brief — `syne recall` prints
+a small, **hard-capped**, project-scoped digest to stdout (recent-session headers
+by default, the curated-memory index with `--memories`, or search results for a
+query). It never loads a full transcript and skips the registry sync, so it's
+fast enough for a hook:
+
+```bash
+syne recall --recent --max-chars 1500     # tiny "what was I doing" brief
+syne recall "auth" --memories             # curated decisions about auth
+syne recall "JWT" --format json           # machine-readable for piping
+```
+
+The plugin ships an **inert** `SessionStart` hook (`hooks/hooks.json` with an
+empty `hooks` array). To get a brief at the start of every session, add a
+`SessionStart` entry that runs `syne recall --recent --max-chars 1500` and
+injects its stdout — but prefer the trigger-gated `syne align` directive over
+eager session-start loading, which taxes every session whether or not it
+continues prior work.
 
 ## Settings file
 
@@ -298,14 +359,18 @@ src/mnemosyne/
   artifacts.py      # discover per-session bundle (subagents / workflows / summaries / tool-results)
   artifact_export.py # write the bundle to disk (reuses parser/render) + project memories + slugify
   config.py         # TOML settings + project registry + git enrichment
-  cli.py            # cyclopts app: list / export / export-all / merge / projects / install / mcp
-  mcp_server.py     # FastMCP server with 11 read-only tools (sessions + memories + subagents)
+  query.py          # shared recall/search core (used by the MCP server AND `syne recall`)
+  recall.py         # `syne recall` — capped, headers-first stdout brief for hooks / non-MCP agents
+  align.py          # `syne align` — idempotent CLAUDE.md/AGENTS.md self-alignment directive writer
+  cli.py            # cyclopts app: list / export / export-all / merge / recall / align / install / mcp
+  mcp_server.py     # FastMCP server with 13 read-only tools (self_align + sessions + memories + subagents)
   installer.py      # syne install / uninstall — deploys plugin to ~/.claude/plugins/
   plugin_assets/    # bundled plugin templates (.claude-plugin/, skills/, commands/, .mcp.json)
 tests/
   test_parser.py / test_render.py / test_formats.py / test_cli_helpers.py
   test_clean.py / test_workspace.py / test_installer.py / test_mcp_server.py
   test_memory.py / test_artifacts.py / test_artifact_export.py
+  test_query.py / test_recall.py / test_align.py
 ```
 
 ## License

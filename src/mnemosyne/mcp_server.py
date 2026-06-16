@@ -27,13 +27,24 @@ from mnemosyne.config import (
     load_settings,
     sync_registry,
 )
-from mnemosyne.memory import collect_memories
 from mnemosyne.parser import (
     list_session_files,
     project_dir_for_cwd,
     read_session,
     summarize_session,
 )
+from mnemosyne.query import (
+    all_project_dirs,
+    fit_packet,
+    memory_detail,
+    memory_entries,
+    recent_sessions,
+    session_handoff,
+    session_summary_dict,
+)
+from mnemosyne.query import search_memories as _query_memories
+from mnemosyne.query import search_sessions as _query_sessions
+from mnemosyne.query import self_align as _query_self_align
 from mnemosyne.render import Mode, RenderOptions, render_markdown
 
 mcp = FastMCP("mnemosyne")
@@ -75,22 +86,6 @@ def _resolve_session_path(project_dir: Path, session_id: str) -> Path:
             f"Prefix {session_id!r} matches {len(matches)} sessions; pass a longer prefix."
         )
     return matches[0]
-
-
-def _summary_dict(path: Path, project_entry: ProjectEntry | None = None) -> dict[str, Any]:
-    s = summarize_session(path)
-    return {
-        "session_id": s.session_id,
-        "title": s.ai_title or s.first_user_text or s.session_id,
-        "first_prompt": s.first_user_text,
-        "first_timestamp": s.first_timestamp,
-        "last_timestamp": s.last_timestamp,
-        "user_count": s.user_count,
-        "assistant_count": s.assistant_count,
-        "size_bytes": s.size_bytes,
-        "project_slug": project_entry.slug if project_entry else None,
-        "project_path": project_entry.local_path if project_entry else None,
-    }
 
 
 def _project_dict(entry: ProjectEntry, n_sessions: int) -> dict[str, Any]:
@@ -142,15 +137,7 @@ def list_sessions(
         limit: cap on number of sessions returned (default 20).
     """
     project_dir = _resolve_project(project)
-    files = list_session_files(project_dir)
-    summaries = [summarize_session(p) for p in files]
-    summaries.sort(key=lambda s: s.last_timestamp or "", reverse=True)
-    settings = load_settings()
-    entry = settings.projects.get(project_dir.name)
-    out: list[dict[str, Any]] = []
-    for s in summaries[:limit]:
-        out.append(_summary_dict(s.path, entry))
-    return out
+    return recent_sessions(project_dir, limit, load_settings())
 
 
 @mcp.tool()
@@ -166,9 +153,8 @@ def get_session_summary(
     """
     project_dir = _resolve_project(project)
     path = _resolve_session_path(project_dir, session_id)
-    settings = load_settings()
-    entry = settings.projects.get(project_dir.name)
-    return _summary_dict(path, entry)
+    entry = load_settings().projects.get(project_dir.name)
+    return session_summary_dict(summarize_session(path), entry)
 
 
 @mcp.tool()
@@ -237,53 +223,8 @@ def search_sessions(
         max_results: cap on total matches (default 10).
         context_chars: characters of context to include on either side of the hit.
     """
-    needle = query.lower()
-    if not needle.strip():
-        return []
-
-    if project is not None:
-        project_dirs = [_resolve_project(project)]
-    else:
-        if not CLAUDE_PROJECTS.is_dir():
-            return []
-        project_dirs = [
-            d for d in CLAUDE_PROJECTS.iterdir() if d.is_dir() and d.name.startswith("-")
-        ]
-
-    settings = load_settings()
-    opts = RenderOptions(mode="transcript")
-    hits: list[dict[str, Any]] = []
-
-    for pd in project_dirs:
-        entry = settings.projects.get(pd.name)
-        for jsonl in pd.glob("*.jsonl"):
-            try:
-                events = read_session(jsonl)
-            except OSError:
-                continue
-            text = render_markdown(events, opts=opts)
-            lower = text.lower()
-            idx = lower.find(needle)
-            if idx < 0:
-                continue
-            start = max(0, idx - context_chars)
-            end = min(len(text), idx + len(query) + context_chars)
-            snippet = text[start:end].replace("\n", " ").strip()
-            summary = summarize_session(jsonl)
-            hits.append(
-                {
-                    "session_id": summary.session_id,
-                    "title": summary.ai_title or summary.first_user_text or summary.session_id,
-                    "project_slug": pd.name,
-                    "project_name": entry.friendly_name if entry else pd.name.lstrip("-"),
-                    "last_timestamp": summary.last_timestamp,
-                    "snippet": snippet,
-                    "match_index": idx,
-                }
-            )
-            if len(hits) >= max_results:
-                return hits
-    return hits
+    dirs = [_resolve_project(project)] if project is not None else all_project_dirs(CLAUDE_PROJECTS)
+    return _query_sessions(dirs, query, load_settings(), max_results, context_chars)
 
 
 def _subagent_dict(ref: SubagentRef) -> dict[str, Any]:
@@ -310,18 +251,7 @@ def list_memories(project: str | None = None) -> list[dict[str, Any]]:
     Args:
         project: slug or absolute path; omit to use the current cwd's project.
     """
-    coll = collect_memories(_resolve_project(project))
-    return [
-        {
-            "name": m.name,
-            "type": m.type,
-            "description": m.description,
-            "origin_session_id": m.origin_session_id,
-            "links": m.links,
-            "char_count": len(m.body),
-        }
-        for m in coll.memories
-    ]
+    return memory_entries(_resolve_project(project))
 
 
 @mcp.tool()
@@ -332,22 +262,7 @@ def get_memory(name: str, project: str | None = None) -> dict[str, Any]:
         name: memory name (e.g. ``product-roadmap-mid-2026``) or a unique prefix.
         project: slug or absolute path; omit for the cwd's project.
     """
-    coll = collect_memories(_resolve_project(project))
-    exact = [m for m in coll.memories if m.name == name]
-    matches = exact or [m for m in coll.memories if m.name.startswith(name)]
-    if not matches:
-        raise FileNotFoundError(f"No memory named {name!r} in {coll.project_slug}")
-    if len(matches) > 1:
-        raise ValueError(f"{name!r} matches {len(matches)} memories; pass a longer prefix.")
-    m = matches[0]
-    return {
-        "name": m.name,
-        "type": m.type,
-        "description": m.description,
-        "origin_session_id": m.origin_session_id,
-        "links": m.links,
-        "body": m.body,
-    }
+    return memory_detail(_resolve_project(project), name)
 
 
 @mcp.tool()
@@ -363,36 +278,8 @@ def search_memories(
         project: slug or absolute path; omit to search ALL projects.
         max_results: cap on total matches (default 10).
     """
-    needle = query.lower()
-    if not needle.strip():
-        return []
-    if project is not None:
-        project_dirs = [_resolve_project(project)]
-    elif CLAUDE_PROJECTS.is_dir():
-        project_dirs = [
-            d for d in CLAUDE_PROJECTS.iterdir() if d.is_dir() and d.name.startswith("-")
-        ]
-    else:
-        return []
-
-    hits: list[dict[str, Any]] = []
-    for pd in project_dirs:
-        for m in collect_memories(pd).memories:
-            haystack = f"{m.name}\n{m.description or ''}\n{m.body}".lower()
-            if needle not in haystack:
-                continue
-            hits.append(
-                {
-                    "name": m.name,
-                    "project_slug": pd.name,
-                    "type": m.type,
-                    "description": m.description,
-                    "origin_session_id": m.origin_session_id,
-                }
-            )
-            if len(hits) >= max_results:
-                return hits
-    return hits
+    dirs = [_resolve_project(project)] if project is not None else all_project_dirs(CLAUDE_PROJECTS)
+    return _query_memories(dirs, query, max_results)
 
 
 @mcp.tool()
@@ -456,6 +343,54 @@ def get_subagent(
         max_tool_input_chars=max_tool_chars,
     )
     return render_markdown(events, title=title, opts=opts, session_id=ref.agent_id)
+
+
+@mcp.tool()
+def self_align(
+    query: str | None = None,
+    project: str | None = None,
+    max_chars: int = 6000,
+) -> dict[str, Any]:
+    """One bounded retrieval packet to self-align before working — the preferred start.
+
+    Returns the cheap layers in a single call: curated-memory matches/index, recent
+    session summaries, transcript snippets (when ``query`` is given), plus
+    ``suggested_next`` calls for the expensive follow-ups and a ``guidance`` note.
+    Carries NO full memory bodies or transcripts — pull those on demand via the
+    suggested ``get_memory`` / ``get_session`` / ``get_session_handoff`` calls only if
+    the task needs that detail.
+
+    Recalled content is **dated evidence**, not authority: the live code and the
+    user's current request win. Cite memory names / session IDs.
+
+    Args:
+        query: topic to align on (e.g. "auth", "billing"). Omit for a general
+            "what is this project / what was I doing" brief.
+        project: slug or absolute path; omit for the cwd's project (use ALL projects
+            only when the user explicitly asks).
+        max_chars: soft cap; the packet is trimmed (hits → recent → memories) to fit.
+    """
+    dirs = [_resolve_project(project)] if project is not None else all_project_dirs(CLAUDE_PROJECTS)
+    packet = _query_self_align(dirs, load_settings(), query=query)
+    return fit_packet(packet, max_chars)
+
+
+@mcp.tool()
+def get_session_handoff(session_id: str, project: str | None = None) -> dict[str, Any]:
+    """Return a session's handoff digest (the compaction "where we left off" summary).
+
+    Claude Code writes these on compaction — a curated Title / Current State / Task
+    spec / Next steps digest, the right altitude for "continue where we left off" and
+    far cheaper than the full transcript. ``has_handoff`` is False when the session
+    has no digest (most don't).
+
+    Args:
+        session_id: full UUID or unique prefix.
+        project: slug or absolute path; omit for the cwd's project.
+    """
+    project_dir = _resolve_project(project)
+    path = _resolve_session_path(project_dir, session_id)
+    return session_handoff(project_dir, path.stem)
 
 
 def run() -> None:

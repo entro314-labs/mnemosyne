@@ -2,7 +2,7 @@
 # Import package and `syne` CLI are "mnemosyne"; the PyPI distribution name is
 # "mnemosyne-cc" because the bare "mnemosyne" name is taken by an unrelated project.
 name = "mnemosyne-cc"
-version = "1.4.0"
+version = "1.5.0"
 description = "Memory + context suite for Claude Code: clean transcript exports (markdown/JSONL/plain), cross-session merge, project archive, plus an MCP server and a Claude Code plugin."
 readme = "README.md"
 requires-python = ">=3.13"

@@ -1,0 +1,169 @@
+"""``syne align`` — write the mnemosyne self-alignment directive into a project.
+
+Agentic tools (Claude Code, opencode, Codex, Cursor, Copilot, Windsurf, Gemini)
+load a project instruction file into every session. This writes a small, always-on
+*router* into those files — ``CLAUDE.md`` (Claude Code, which does NOT read
+``AGENTS.md``) and ``AGENTS.md`` (the cross-tool open standard everyone else reads)
+— telling the agent that a recallable memory archive exists, WHEN to consult it
+(trigger-gated, never eager), and the guardrails that keep recall from amplifying
+drift (cheapest-first, project-scoped, dated-evidence, transcripts-last).
+
+The write is an **idempotent marked region**: only the span between the begin/end
+markers is ever touched, re-running is a no-op when unchanged, and ``--remove``
+strips exactly that span. mnemosyne never edits content outside its markers.
+"""
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
+from mnemosyne.parser import project_dir_for_cwd
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
+BEGIN = "<!-- mnemosyne:begin (managed by `syne align`; edits inside are overwritten) -->"
+END = "<!-- mnemosyne:end -->"
+
+# The router. Trigger-gated and guardrailed by design — it must REDUCE drift, not
+# feed it. Kept terse so size-budgeted tools (e.g. Windsurf ~6k chars) don't drop
+# the safety lines. Names MCP tools and the `syne` CLI fallback for non-MCP tools.
+_DIRECTIVE = """## Session memory (mnemosyne)
+
+This project has a searchable archive of past sessions and **curated memories**
+(decisions, plans, gotchas). You CAN recall prior work — never claim you lack
+access to past sessions.
+
+**Do NOT auto-load history every session.** Recall only when a trigger fires:
+- the user references prior work / continuity ("what was I working on",
+  "continue where we left off", "what did we decide about X");
+- the task plausibly continues recent work in THIS project;
+- an unfamiliar pattern feels like one seen before.
+
+**How** — MCP tools if available, else the `syne` CLI:
+- **Fastest — one bounded call:** `self_align("X")` (MCP) or `syne recall --bundle "X"`
+  (CLI) returns memories + recent + hits + `suggested_next`. Then pull ONLY what it
+  suggests. This is the preferred start.
+- "what did we decide / the plan for X" →
+  `search_memories("X")` → `get_memory(…)`  ·  CLI `syne recall "X" --memories`
+- "continue where we left off" →
+  `recall_recent()` → `get_session_handoff(id)` (compaction digest)  ·  CLI `syne recall --recent`
+- "have I done X before" →
+  `search_sessions("X")` → `get_session(id)`  ·  CLI `syne recall "X"`
+- "how did that audit/workflow conclude" →
+  `list_subagents()` → `get_subagent(…)`
+
+**Trust order (highest first):** curated memories → session summary → targeted
+transcript search → full transcript LAST. Transcripts retain dead-ends and
+rejected approaches — do not re-adopt them as decisions; memories are the
+distilled, current answer.
+
+**Rules:**
+- Scope to THIS project. Search all projects only if the user asks, and never
+  paste another project's content into this one.
+- Start cheap (headers/summaries); pull at most 1-3 sessions, never `full` mode
+  for alignment, then stop — don't loop searching.
+- Treat every recall as DATED EVIDENCE, not current truth: verify against the
+  live code and the user's request; on conflict, the live code and the user win
+  — flag the staleness.
+- A past decision is context, not a commitment. If it looks wrong/outdated,
+  surface it (with its date/session id) and propose revisiting it.
+- If nothing relevant is found, say so — never fabricate past content."""
+
+
+def render_block() -> str:
+    """The full marked region (markers + directive), newline-terminated."""
+    return f"{BEGIN}\n{_DIRECTIVE.strip()}\n{END}\n"
+
+
+def _region_bounds(text: str) -> tuple[int, int] | None:
+    i = text.find(BEGIN)
+    if i == -1:
+        return None
+    j = text.find(END, i)
+    if j == -1:
+        return None
+    return i, j + len(END)
+
+
+def has_region(text: str) -> bool:
+    return _region_bounds(text) is not None
+
+
+def upsert_region(text: str, block: str) -> str:
+    """Replace an existing mnemosyne region, or append one to the end of ``text``."""
+    body = block.strip()
+    bounds = _region_bounds(text)
+    if bounds is not None:
+        i, k = bounds
+        return text[:i] + body + text[k:]
+    base = text.rstrip()
+    return f"{base}\n\n{body}\n" if base else f"{body}\n"
+
+
+def strip_region(text: str) -> str:
+    """Remove the mnemosyne region, preserving all other content."""
+    bounds = _region_bounds(text)
+    if bounds is None:
+        return text
+    i, k = bounds
+    before = text[:i].rstrip()
+    after = text[k:].lstrip()
+    if before and after:
+        return f"{before}\n\n{after}" if after.endswith("\n") else f"{before}\n\n{after}\n"
+    joined = (before + after).strip()
+    return f"{joined}\n" if joined else ""
+
+
+# Outcomes of applying the directive to one file.
+Outcome = str  # "created" | "written" | "unchanged" | "removed" | "absent"
+
+
+def apply_to_file(path: Path, *, remove: bool = False) -> Outcome:
+    """Idempotently write/refresh (or remove) the mnemosyne region in one file."""
+    existing = path.read_text(encoding="utf-8") if path.is_file() else ""
+    if remove:
+        updated = strip_region(existing)
+        if updated == existing:
+            return "absent"
+        path.write_text(updated, encoding="utf-8")
+        return "removed"
+    updated = upsert_region(existing, render_block())
+    if updated == existing:
+        return "unchanged"
+    existed = path.is_file()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(updated, encoding="utf-8")
+    return "written" if existed else "created"
+
+
+def is_available(local_path: Path, *, claude_home: Path | None = None) -> bool:
+    """True when mnemosyne is actually usable for this project.
+
+    Avoids writing a directive that points at tools/CLI that aren't wired (the
+    'only if it already exists' gate): the plugin is installed, OR the project has
+    exports on disk, OR the cwd maps to a Claude Code project with ≥1 session.
+    """
+    from pathlib import Path as _Path  # noqa: PLC0415 — only needed for the default
+
+    home = claude_home or (_Path.home() / ".claude")
+    if (home / "plugins" / "mnemosyne" / ".claude-plugin" / "plugin.json").is_file():
+        return True
+    if (local_path / ".mnemosyne-exports").is_dir():
+        return True
+    slug_dir = project_dir_for_cwd(local_path, claude_home=home / "projects")
+    return slug_dir.is_dir() and any(slug_dir.glob("*.jsonl"))
+
+
+def target_files(local_path: Path, *, claude: bool = True, agents: bool = True) -> list[Path]:
+    """The instruction files to manage for a project root.
+
+    AGENTS.md is the cross-tool standard (Codex/opencode/Cursor/Copilot/Windsurf/
+    Gemini); CLAUDE.md is Claude Code, which does not read AGENTS.md.
+    """
+    files: list[Path] = []
+    if claude:
+        files.append(local_path / "CLAUDE.md")
+    if agents:
+        files.append(local_path / "AGENTS.md")
+    return files

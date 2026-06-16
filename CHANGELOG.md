@@ -5,6 +5,86 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.0] — 2026-06-16
+
+Self-alignment across tools. A recallable archive is only useful if the agent
+actually consults it — and consults it *safely*. This release adds a tiny CLI
+recall reader and an idempotent directive writer so Claude Code **and** other
+agents (opencode, Codex, Cursor, Copilot, Windsurf, Gemini) know a memory archive
+exists, when to recall it, and the guardrails that keep recall from amplifying
+drift instead of reducing it.
+
+### Added — `syne recall` (capped stdout reader)
+- **`syne recall [QUERY] [--recent] [--memories] [--all-projects] [--limit N]
+  [--max-chars N] [--format markdown|json]`** — prints a small, hard-capped brief
+  to stdout: recent-session headers (default), the curated-memory index
+  (`--memories`), or search results (`QUERY`). Project-scoped by default, never a
+  full transcript, and it skips the git-touching registry sync — light enough for
+  a SessionStart hook or a non-MCP agent told to shell out to `syne`. This is the
+  capability the inert `hooks.json` stub always referenced but never had.
+
+### Added — `syne align` (self-alignment directive writer)
+- **`syne align [PATH] [--export] [--remove] [--claude-only] [--agents-only]
+  [--force]`** — writes an **idempotent, marker-scoped** region
+  (`<!-- mnemosyne:begin -->`…`<!-- mnemosyne:end -->`) into a project's
+  **`CLAUDE.md`** (Claude Code, which does not read `AGENTS.md`) and **`AGENTS.md`**
+  (the cross-tool open standard). Only the marked span is ever touched; re-running
+  is a no-op when unchanged; `--remove` strips exactly the span. `--export` prints
+  the block to stdout for manual placement / migration.
+- **Availability gate:** the directive is written only when mnemosyne is actually
+  usable for the project (plugin installed, OR `.mnemosyne-exports/` present, OR
+  the cwd maps to a Claude project with ≥1 session) — so no agent is ever pointed
+  at tools/CLI that aren't wired. `--force` bypasses.
+- The directive itself is **trigger-gated and guardrailed by design** (the whole
+  point is to *reduce* drift): don't auto-load every session; cheapest-first with
+  hard stops (≤1–3 sessions, never `full` mode); trust order **curated memories →
+  session summary → targeted search → full transcript LAST** (transcripts keep
+  dead-ends — don't re-adopt them); treat recalls as **dated evidence** that the
+  live code overrides; project-scoped by default; a past decision is context, not
+  a commitment; never fabricate.
+
+### Added — one-call self-alignment + handoff digests
+- **`self_align` (MCP tool) + `syne recall --bundle` (CLI)** — a single **bounded**
+  retrieval packet so agents don't have to compose the lower-level tools by hand:
+  curated-memory matches/index + recent-session summaries + transcript snippets
+  (for a query) + **`suggested_next`** follow-up calls + a `guidance` note, with
+  provenance (memory names, session IDs, timestamps, project). It carries **no**
+  full memory bodies or transcripts — those stay pull-on-demand via the
+  suggestions, preserving progressive disclosure. `max_chars` trims the packet
+  (hits → recent → memories) to fit. This encodes the cheapest-first policy in
+  code instead of hoping the model follows a multi-step ladder.
+- **`get_session_handoff` (MCP tool)** — exposes the session-memory compaction
+  digest (`session-memory/summary.md`: Title / Current State / Task spec / Next
+  steps) that previously was only reachable via `--summaries` export.
+  Purpose-built "where we left off" context, far cheaper than a transcript.
+- The `syne align` directive and the `session-history` skill now lead with
+  `self_align` as the preferred start and route "continue where we left off" to
+  `get_session_handoff`.
+
+### Changed — shared recall core (no duplication)
+- New **`query.py`** holds the canonical recall/search primitives
+  (`recent_sessions`, `search_sessions`, `search_memories`, `memory_entries`,
+  `memory_detail`, `session_summary_dict`). `mcp_server.py` now delegates to it
+  instead of carrying its own copies of the search loops, and `syne recall` uses
+  the same core — the two surfaces can no longer drift.
+- `_slugify`'s sibling: the MCP tool outputs are unchanged (shapes preserved).
+
+### Changed — installer + plugin
+- `syne install` now points users to `syne align` for proactive, cross-tool
+  continuity; `syne uninstall` best-effort strips the align region from the
+  current project (other projects: `syne align --remove`).
+- The opt-in `SessionStart` hook stub now documents the real
+  `syne recall --recent --max-chars 1500` brief (still inert by default —
+  prefer the trigger-gated directive over eager session-start loading).
+- `session-history` skill notes the curated-memory-first trust order.
+
+### Tests
+- `test_query.py`, `test_recall.py`, `test_align.py` (region upsert/strip
+  idempotency, lifecycle outcomes, the availability gate, the `self_align`
+  packet + `session_handoff` + `fit_packet` budget trimming, `--bundle`
+  rendering), plus the refactored MCP tools still pass their existing suite.
+  **199 tests** total.
+
 ## [1.4.0] — 2026-06-16
 
 Export everything Claude Code stores, not just transcripts. Beside each session,
@@ -246,6 +326,7 @@ JSONL files to readable markdown for humans and agents.
 - 41 tests, GitHub Actions CI (lint + format + tests on ubuntu and macos),
   MIT license, full publish metadata.
 
+[1.5.0]: https://github.com/entro314-labs/mnemosyne/releases/tag/v1.5.0
 [1.4.0]: https://github.com/entro314-labs/mnemosyne/releases/tag/v1.4.0
 [1.3.0]: https://github.com/entro314-labs/mnemosyne/releases/tag/v1.3.0
 [1.2.0]: https://github.com/entro314-labs/mnemosyne/releases/tag/v1.2.0

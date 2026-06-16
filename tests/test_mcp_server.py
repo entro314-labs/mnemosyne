@@ -16,6 +16,7 @@ from mnemosyne import config, mcp_server, parser
 from mnemosyne.mcp_server import (
     get_memory,
     get_session,
+    get_session_handoff,
     get_session_summary,
     get_subagent,
     list_memories,
@@ -25,6 +26,7 @@ from mnemosyne.mcp_server import (
     recall_recent,
     search_memories,
     search_sessions,
+    self_align,
 )
 
 if TYPE_CHECKING:
@@ -102,6 +104,13 @@ def fake_claude_home(tmp_path: Path, monkeypatch):
     (sub_dir / "agent-deadbeef01.meta.json").write_text(
         json.dumps({"agentType": "Explore", "description": "audit login", "toolUseId": "toolu_x"}),
         encoding="utf-8",
+    )
+
+    # A compaction handoff digest for the session.
+    sm_dir = project_dir / full_sid / "session-memory"
+    sm_dir.mkdir(parents=True)
+    (sm_dir / "summary.md").write_text(
+        "# Session Title\n\nAuth flow\n\n# Next steps\n\nWire refresh tokens.\n", encoding="utf-8"
     )
 
     # Stub the module-level CLAUDE_PROJECTS in every place that reads it.
@@ -247,3 +256,28 @@ def test_get_subagent_unknown_raises(fake_claude_home) -> None:
             agent_id="zzzz",
             project=fake_claude_home["slug"],
         )
+
+
+# ---- self_align + handoff ----
+
+
+def test_self_align_returns_bounded_packet(fake_claude_home) -> None:
+    p = _call(self_align)(project=fake_claude_home["slug"])
+    assert set(p) >= {"memories", "recent_sessions", "session_hits", "suggested_next", "guidance"}
+    assert p["recent_sessions"]  # the one fixture session
+    assert any(m["name"] == "the-plan" for m in p["memories"])
+    # no full bodies / transcripts in the packet
+    assert all("body" not in m for m in p["memories"])
+
+
+def test_self_align_with_query(fake_claude_home) -> None:
+    p = _call(self_align)(query="JWT", project=fake_claude_home["slug"])
+    assert any("JWT" in h["snippet"] for h in p["session_hits"])
+
+
+def test_get_session_handoff(fake_claude_home) -> None:
+    h = _call(get_session_handoff)(
+        session_id=fake_claude_home["session_id"], project=fake_claude_home["slug"]
+    )
+    assert h["has_handoff"] is True
+    assert "Next steps" in h["summary"]

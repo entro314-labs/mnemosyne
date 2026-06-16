@@ -164,7 +164,17 @@ def print_post_install_instructions(result: InstallResult, *, console) -> None:
     console.print("\n[bold]Next steps in Claude Code:[/bold]")
     console.print("  1. Restart Claude Code (so it picks up the new marketplace).")
     console.print("  2. Run: [cyan]/plugin install mnemosyne@mnemosyne[/cyan]")
-    console.print("  3. Try: [cyan]/history[/cyan]  or  [cyan]/recall <topic>[/cyan]")
+    console.print("  3. Try [cyan]/history[/cyan], [cyan]/recall[/cyan], [cyan]/memories[/cyan].")
+
+    console.print(
+        "\n[bold]Optional — proactive continuity across tools:[/bold]\n"
+        "  [cyan]syne align[/cyan]  writes a self-alignment directive into a project's "
+        "CLAUDE.md + AGENTS.md\n"
+        "  (idempotent, marker-scoped, reversible with [cyan]syne align --remove[/cyan]) so Claude "
+        "— and\n"
+        "  other agents like opencode / Codex / Cursor via AGENTS.md — know to recall memories and "
+        "sessions."
+    )
 
 
 def main() -> int:  # pragma: no cover — wired through CLI, not directly invoked

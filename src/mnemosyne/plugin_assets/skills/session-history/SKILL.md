@@ -27,6 +27,16 @@ workflow calls. The user's past work across all their projects is queryable.
   case-insensitive substring search across rendered transcripts. Omit
   `project` to search ALL projects.
 
+### Start here — one bounded call
+
+- `self_align(query?, project?, max_chars=6000)` — **the preferred way to align
+  before working.** Returns one capped packet: curated-memory matches/index,
+  recent-session summaries, transcript snippets (for a query), plus
+  `suggested_next` calls and a `guidance` note. It carries NO full bodies or
+  transcripts — pull those only via the suggested `get_memory` / `get_session` /
+  `get_session_handoff` calls, and only if the task needs that detail. Use this
+  instead of composing the lower-level tools by hand.
+
 ### Memory tools — curated knowledge, denser than transcripts
 
 - `list_memories(project?)` — the project's saved memories (name, type, one-line
@@ -37,6 +47,10 @@ workflow calls. The user's past work across all their projects is queryable.
 - `get_memory(name, project?)` — one memory's full body by name or unique prefix.
 - `search_memories(query, project?, max_results=10)` — substring search across
   memory names/descriptions/bodies. Omit `project` to search ALL projects.
+- `get_session_handoff(session_id, project?)` — a session's compaction handoff
+  digest (Title / Current State / Task spec / Next steps). The right altitude for
+  "continue where we left off" and far cheaper than the full transcript. Most
+  sessions have none (`has_handoff: false`); written only on compaction.
 
 ### Subagent tools — the work hidden behind Task/workflow calls
 
@@ -52,7 +66,9 @@ workflow calls. The user's past work across all their projects is queryable.
 
 | User signal | Tool |
 |---|---|
+| Aligning before a continuity-flavored task (start here) | `self_align("topic")` |
 | "What's the plan / roadmap / what did we decide about X?" | `search_memories("X")` → `get_memory()` |
+| "Continue where we left off" | `recall_recent()` → `get_session_handoff(id)` |
 | "What was I working on?" / vague continuity | `recall_recent()` |
 | "Have I solved X before?" / "have I seen Y" | `search_sessions(query="X")` |
 | "Continue from session abc123" | `get_session("abc123")` |
@@ -87,3 +103,9 @@ workflow calls. The user's past work across all their projects is queryable.
 - Don't fabricate session content if a tool returns no results — say so.
 - Don't expose raw session UUIDs to the user without context; pair them with
   the session title or first prompt for traceability.
+- Don't treat a recalled memory or decision as current truth — it's **dated
+  evidence**. Verify it against the live code and the user's current request;
+  when they conflict, the live code and the user win, and flag the staleness.
+- Don't re-adopt an approach found in a raw transcript without checking it
+  wasn't a dead-end already tried and rejected — prefer the curated memory,
+  which is the distilled, current answer.

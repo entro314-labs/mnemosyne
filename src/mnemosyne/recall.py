@@ -1,0 +1,190 @@
+"""``syne recall`` — a small, hard-capped stdout reader for self-alignment.
+
+Prints recent-session headers, the curated-memory index, or search results to
+stdout, size-capped, so a SessionStart hook or a non-MCP agent (told by its
+instruction file to shell out to ``syne``) can pull *relevant* context without
+ever dumping a whole transcript into the window. This is the CLI counterpart to
+the MCP recall tools; both sit on :mod:`mnemosyne.query`, so they never drift.
+
+Deliberately light: it never loads full transcripts, defaults to the current
+project, and avoids the git-touching registry sync so it stays fast enough for a
+session-start hook.
+"""
+
+from __future__ import annotations
+
+import json
+from typing import TYPE_CHECKING, Any, Literal
+
+from mnemosyne import query
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
+    from mnemosyne.config import Settings
+
+RecallFormat = Literal["markdown", "json"]
+
+
+def _short(text: str | None, n: int = 90) -> str:
+    if not text:
+        return ""
+    text = " ".join(text.split())
+    return text if len(text) <= n else text[: n - 1] + "…"
+
+
+def _ts(value: str | None) -> str:
+    return (value or "").replace("T", " ").split(".")[0] or "-"
+
+
+def _cap(text: str, max_chars: int) -> str:
+    if max_chars <= 0 or len(text) <= max_chars:
+        return text
+    return text[:max_chars].rstrip() + f"\n… [truncated {len(text) - max_chars} chars]"
+
+
+def _gather(
+    dirs: list[Path],
+    settings: Settings,
+    *,
+    query_str: str | None,
+    memories: bool,
+    limit: int,
+    context_chars: int,
+) -> tuple[str, list[dict[str, Any]]]:
+    """Return (kind, rows) for the requested recall, dispatched by the flags."""
+    if query_str:
+        if memories:
+            return "memory_search", query.search_memories(dirs, query_str, limit)
+        return "session_search", query.search_sessions(
+            dirs, query_str, settings, limit, context_chars
+        )
+    if memories:
+        rows: list[dict[str, Any]] = []
+        for pd in dirs:
+            rows.extend(query.memory_entries(pd))
+        return "memory_index", rows
+    recent: list[dict[str, Any]] = []
+    for pd in dirs:
+        recent.extend(query.recent_sessions(pd, limit, settings))
+    recent.sort(key=lambda r: r.get("last_timestamp") or "", reverse=True)
+    return "recent", recent[:limit] if len(dirs) == 1 else recent
+
+
+def _render_markdown(kind: str, rows: list[dict[str, Any]], *, multi_project: bool) -> str:
+    if not rows:
+        return {
+            "recent": "_No recent sessions found._",
+            "memory_index": "_No curated memories for this project._",
+            "memory_search": "_No matching memories._",
+            "session_search": "_No matching sessions._",
+        }.get(kind, "_Nothing found._")
+
+    def proj(r: dict[str, Any]) -> str:
+        slug = r.get("project_slug") or r.get("project_name")
+        return f" · _{str(slug).lstrip('-')}_" if (multi_project and slug) else ""
+
+    lines: list[str] = []
+    if kind == "recent":
+        lines.append("## Recent sessions")
+        for r in rows:
+            lines.append(
+                f"- `{r['session_id'][:8]}` · {_ts(r.get('last_timestamp'))} · "
+                f"{_short(r.get('title'))}{proj(r)} "
+                f"_({r.get('user_count', 0)}+{r.get('assistant_count', 0)} msgs)_"
+            )
+    elif kind == "memory_index":
+        lines.append("## Curated memories")
+        for r in rows:
+            t = f" ({r['type']})" if r.get("type") else ""
+            lines.append(f"- **{r['name']}**{t}{proj(r)} — {_short(r.get('description'))}")
+    elif kind == "memory_search":
+        lines.append("## Matching memories")
+        for r in rows:
+            t = f" ({r['type']})" if r.get("type") else ""
+            lines.append(f"- **{r['name']}**{t}{proj(r)} — {_short(r.get('description'))}")
+    else:  # session_search
+        lines.append("## Matching sessions")
+        for r in rows:
+            lines.append(
+                f"- `{r['session_id'][:8]}` · {_short(r.get('title'))}{proj(r)}\n"
+                f"  …{_short(r.get('snippet'), 200)}…"
+            )
+    return "\n".join(lines)
+
+
+def _render_bundle(p: dict[str, Any]) -> str:
+    lines = ["## Self-align brief"]
+    meta: list[str] = []
+    if p.get("project_slugs"):
+        meta.append("project " + ", ".join(str(s).lstrip("-") for s in p["project_slugs"]))
+    if p.get("query"):
+        meta.append(f'query "{p["query"]}"')
+    if meta:
+        lines.append("_" + " · ".join(meta) + "_")
+    if p.get("memories"):
+        lines.append("\n**Curated memories**")
+        for m in p["memories"]:
+            t = f" ({m['type']})" if m.get("type") else ""
+            lines.append(f"- **{m['name']}**{t} — {_short(m.get('description'))}")
+    if p.get("recent_sessions"):
+        lines.append("\n**Recent sessions**")
+        for r in p["recent_sessions"]:
+            sid, ts = r["session_id"][:8], _ts(r.get("last_timestamp"))
+            lines.append(f"- `{sid}` · {ts} · {_short(r.get('title'))}")
+    if p.get("session_hits"):
+        lines.append("\n**Transcript hits**")
+        for h in p["session_hits"]:
+            sid, snip = h["session_id"][:8], _short(h.get("snippet"), 160)
+            lines.append(f"- `{sid}` · {_short(h.get('title'))}  …{snip}…")
+    if p.get("suggested_next"):
+        lines.append("\n**Suggested next**")
+        for s in p["suggested_next"]:
+            lines.append(f"- `{s['call']}` — {s['why']}")
+    if p.get("guidance"):
+        lines.append("\n_" + p["guidance"] + "_")
+    return "\n".join(lines)
+
+
+def build_bundle(
+    dirs: list[Path],
+    settings: Settings,
+    *,
+    query_str: str | None = None,
+    max_chars: int = 6000,
+    fmt: RecallFormat = "markdown",
+) -> str:
+    """Render the aggregated self-align packet (the one-call entry point), capped."""
+    packet = query.fit_packet(query.self_align(dirs, settings, query=query_str), max_chars)
+    if fmt == "json":
+        return _cap(json.dumps(packet, ensure_ascii=False, indent=2), max_chars)
+    return _cap(_render_bundle(packet), max_chars)
+
+
+def build_recall(
+    dirs: list[Path],
+    settings: Settings,
+    *,
+    query_str: str | None = None,
+    memories: bool = False,
+    limit: int = 5,
+    context_chars: int = 160,
+    max_chars: int = 4000,
+    fmt: RecallFormat = "markdown",
+) -> str:
+    """Render a capped recall over ``dirs`` (the project dirs to consult).
+
+    ``query_str`` set → search; otherwise recent sessions (or the memory index
+    when ``memories`` is set). Output is hard-capped at ``max_chars``.
+    """
+    kind, rows = _gather(
+        dirs,
+        settings,
+        query_str=query_str,
+        memories=memories,
+        limit=limit,
+        context_chars=context_chars,
+    )
+    if fmt == "json":
+        return _cap(json.dumps({"kind": kind, "items": rows}, ensure_ascii=False), max_chars)
+    return _cap(_render_markdown(kind, rows, multi_project=len(dirs) != 1), max_chars)

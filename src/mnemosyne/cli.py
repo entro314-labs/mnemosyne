@@ -13,6 +13,7 @@ from rich.console import Console
 from rich.prompt import IntPrompt, Prompt
 from rich.table import Table
 
+from mnemosyne.align import apply_to_file, is_available, render_block, target_files
 from mnemosyne.artifact_export import (
     ArtifactWriteResult,
     slugify,
@@ -40,6 +41,8 @@ from mnemosyne.parser import (
     read_session,
     summarize_session,
 )
+from mnemosyne.query import all_project_dirs
+from mnemosyne.recall import RecallFormat, build_bundle, build_recall
 from mnemosyne.render import Mode, RenderOptions, render_markdown
 
 _VALID_MODES = get_args(Mode)
@@ -1330,6 +1333,161 @@ def _merge_sidecar_payload(
 
 
 @app.command
+def recall(
+    query: Annotated[
+        str | None,
+        Parameter(
+            help="Search term. Omit for recent sessions (or the memory index with --memories)."
+        ),
+    ] = None,
+    /,
+    bundle: Annotated[
+        bool,
+        Parameter(
+            name=["--bundle"],
+            help="One aggregated self-align packet (memories + recent + hits + suggested-next).",
+        ),
+    ] = False,
+    memories: Annotated[
+        bool,
+        Parameter(
+            name=["--memories"], help="Operate over the curated memory layer, not transcripts."
+        ),
+    ] = False,
+    recent: Annotated[
+        bool,
+        Parameter(
+            name=["--recent"], help="Recent session headers (the default when no query is given)."
+        ),
+    ] = False,
+    project_dir: Annotated[
+        Path | None,
+        Parameter(
+            name=["--project-dir", "-p"], help="A ~/.claude/projects/<slug>/ dir (default: cwd's)."
+        ),
+    ] = None,
+    all_projects: Annotated[
+        bool,
+        Parameter(
+            name=["--all-projects"], help="Span every project (default: current project only)."
+        ),
+    ] = False,
+    limit: Annotated[int, Parameter(help="Max rows to print.")] = 5,
+    context_chars: Annotated[int, Parameter(name=["--context-chars"])] = 160,
+    max_chars: Annotated[
+        int,
+        Parameter(
+            name=["--max-chars"],
+            help="Hard cap on output size (keeps a hook/agent from over-pulling).",
+        ),
+    ] = 4000,
+    fmt: Annotated[
+        RecallFormat, Parameter(name=["--format", "-f"], help="markdown (default) or json.")
+    ] = "markdown",
+) -> None:
+    """Print a small, capped recall (recent sessions / memories / search) to stdout.
+
+    The CLI counterpart to the MCP recall tools, for a SessionStart hook or a
+    non-MCP agent told to shell out to `syne`: headers-first, project-scoped,
+    never a full transcript. `--recent` is implied when no query and no --memories.
+    """
+    _ = recent  # recent is the default; the flag exists for explicitness
+    settings = load_settings()
+    if all_projects:
+        dirs = all_project_dirs(CLAUDE_PROJECTS)
+    else:
+        pd = project_dir or project_dir_for_cwd(Path.cwd())
+        if not pd.is_dir():
+            err_console.print("(no mnemosyne archive for this project)")
+            return
+        dirs = [pd]
+    if bundle:
+        print(build_bundle(dirs, settings, query_str=query, max_chars=max_chars, fmt=fmt))
+        return
+    print(
+        build_recall(
+            dirs,
+            settings,
+            query_str=query,
+            memories=memories,
+            limit=limit,
+            context_chars=context_chars,
+            max_chars=max_chars,
+            fmt=fmt,
+        )
+    )
+
+
+@app.command
+def align(
+    path: Annotated[
+        Path | None,
+        Parameter(help="Project root holding CLAUDE.md / AGENTS.md (default: cwd)."),
+    ] = None,
+    /,
+    export: Annotated[
+        bool,
+        Parameter(
+            name=["--export"], help="Print the directive block to stdout instead of writing files."
+        ),
+    ] = False,
+    remove: Annotated[
+        bool,
+        Parameter(
+            name=["--remove"], help="Remove the mnemosyne region from the instruction files."
+        ),
+    ] = False,
+    claude_only: Annotated[
+        bool, Parameter(name=["--claude-only"], help="Only manage CLAUDE.md.")
+    ] = False,
+    agents_only: Annotated[
+        bool, Parameter(name=["--agents-only"], help="Only manage AGENTS.md.")
+    ] = False,
+    force: Annotated[
+        bool,
+        Parameter(
+            name=["--force"], help="Write even if mnemosyne isn't detected for this project."
+        ),
+    ] = False,
+) -> None:
+    """Write the mnemosyne self-alignment directive into CLAUDE.md and AGENTS.md.
+
+    Idempotent and marker-scoped — only the `<!-- mnemosyne:begin -->`…`<!-- mnemosyne:end -->`
+    span is ever touched. AGENTS.md is the cross-tool standard (Codex/opencode/Cursor/
+    Copilot/Windsurf/Gemini); CLAUDE.md is for Claude Code, which does not read AGENTS.md.
+    Use `--export` to print the block for manual placement; `--remove` to strip it.
+    """
+    if export:
+        print(render_block())
+        return
+
+    local = (path or Path.cwd()).resolve()
+    if claude_only and agents_only:
+        raise SystemExit("error: --claude-only and --agents-only are mutually exclusive.")
+    files = target_files(local, claude=not agents_only, agents=not claude_only)
+
+    if not remove and not force and not is_available(local):
+        err_console.print(
+            f"mnemosyne not detected for {local}\n"
+            "  (no plugin installed, no .mnemosyne-exports/, no sessions on disk).\n"
+            "  run an export, install the plugin, or pass --force."
+        )
+        return
+
+    labels = {
+        "created": ("green", "✓ created "),
+        "written": ("green", "✓ updated "),
+        "removed": ("green", "✓ removed "),
+        "unchanged": ("dim", "· unchanged"),
+        "absent": ("dim", "· absent   "),
+    }
+    for f in files:
+        outcome = apply_to_file(f, remove=remove)
+        style, label = labels[outcome]
+        console.print(f"[{style}]{label}[/{style}] {f}")
+
+
+@app.command
 def mcp() -> None:
     """Run the MCP server on stdio (for `syne install`-managed Claude Code plugin)."""
     # Lazy import: pulls in mcp/anyio/uvicorn which we don't need for the
@@ -1385,6 +1543,12 @@ def uninstall(
         console.print(f"[green]✓ uninstalled[/green] {target}")
     else:
         console.print(f"[dim](nothing to remove at {target})[/dim]")
+
+    # Best-effort: strip the self-alignment region from THIS project's instruction
+    # files (we can only reach the cwd; other aligned projects need `syne align --remove`).
+    for f in target_files(Path.cwd()):
+        if apply_to_file(f, remove=True) == "removed":
+            console.print(f"[green]✓ removed align region[/green] {f}")
 
 
 @app.command
