@@ -5,6 +5,75 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.0] — 2026-06-16
+
+Export everything Claude Code stores, not just transcripts. Beside each session,
+Claude Code keeps a curated **memory** layer, session-handoff **summaries**, and
+the full transcripts of every spawned **subagent** and **workflow** agent — all
+previously invisible to mnemosyne (the main transcript only retains a subagent's
+final result). This release captures every artifact category, each behind its own
+opt-in flag, with the same deterministic cleaning applied to the rendered ones.
+
+### Added — artifact discovery + export
+- **`memory.py`** — collect the per-project curated memory layer
+  (`~/.claude/projects/<slug>/memory/*.md`): a focused frontmatter parser
+  (`name`, `description`, `type`, `originSessionId`), `[[link]]`-graph extraction,
+  a consolidated `memories.md`, and a `memories.json` index that splits every
+  memory's links into **resolved** vs **dangling**. Memories are the densest,
+  most reusable knowledge in the archive — roadmaps, architecture decisions,
+  gotchas, preferences — and persist across sessions.
+- **`artifacts.py`** — discover the per-session sidecar bundle stored under
+  `<session-uuid>/`: subagent transcripts (`subagents/agent-*.jsonl` +
+  `.meta.json` → `agentType` / `description` / `toolUseId`), workflow runs
+  (`subagents/workflows/wf_*/` journals + agents), workflow scripts
+  (`workflows/scripts/*.js`), session-memory digests (`session-memory/summary.md`),
+  and externalised tool output (`tool-results/`). Subagent and workflow
+  transcripts share the **exact** record shape of a top-level session, so they
+  render through the existing parser/renderer with no new parsing.
+- **`artifact_export.py`** — write the discovered bundle to a clean tree beside
+  each transcript. Subagent/workflow transcripts get the **same mode + noise
+  scrub** as the main transcript; memories and summaries are copied through
+  whitespace-normalised; tool output runs through `scrub_tool_output`; workflow
+  scripts are copied verbatim (they are source). A `journal-summary.json` rolls
+  up each workflow run (agents started/completed/distinct).
+
+### Added — CLI flags (all default off; existing behaviour unchanged)
+- **`--memories`** → `<out>/memory/` (per-file copies + `MEMORY.md` +
+  `memories.md` + `memories.json`).
+- **`--subagents`** → `<title>.subagents/` (rendered + `index.json`).
+- **`--summaries`** → `<title>.summary.md`.
+- **`--workflows`** → `<title>.workflows/` (scripts + per-run agents + journal summary).
+- **`--tool-results`** → `<title>.tool-results/` (scrubbed).
+- **`--full`** — enable all five. Distinct from `--mode full`, which sets
+  transcript verbosity.
+- Wired into `syne export`, `syne export-all` (including `--all-projects`), and
+  the interactive default. Each run prints a one-line artifact tally.
+
+### Added — MCP tools
+- **`list_memories`**, **`get_memory`**, **`search_memories`** — expose the curated
+  memory graph to agents; the first stop for "what did we decide / what's the plan".
+- **`list_subagents`**, **`get_subagent`** — reach the work hidden behind Task and
+  workflow calls.
+
+### Added — plugin
+- **`/memories [query]`** slash command — list or search a project's memories.
+- `session-history` skill updated to teach Claude the memory and subagent tools.
+- Plugin manifest bumped to 1.4.0 (now tracks the package version).
+
+### Changed
+- `_slugify` moved from `cli.py` to `artifact_export.py` as the shared `slugify`
+  — one implementation for both session and artifact filenames.
+- Import package renamed to `mnemosyne` (the PyPI distribution stays `mnemosyne-cc`;
+  the `syne` command is unchanged).
+
+### Tests
+- `test_memory.py`, `test_artifacts.py`, `test_artifact_export.py`, plus
+  memory/subagent coverage added to `test_mcp_server.py`. **160 tests** total.
+
+### Packaging
+- GitHub Actions workflow for publishing to PyPI; unused dependencies trimmed
+  from `pyproject.toml` / `uv.lock`.
+
 ## [1.3.0] — 2026-06-09
 
 Higher-fidelity output through deterministic noise removal, plus a friction-free
@@ -177,6 +246,7 @@ JSONL files to readable markdown for humans and agents.
 - 41 tests, GitHub Actions CI (lint + format + tests on ubuntu and macos),
   MIT license, full publish metadata.
 
+[1.4.0]: https://github.com/entro314-labs/mnemosyne/releases/tag/v1.4.0
 [1.3.0]: https://github.com/entro314-labs/mnemosyne/releases/tag/v1.3.0
 [1.2.0]: https://github.com/entro314-labs/mnemosyne/releases/tag/v1.2.0
 [1.1.0]: https://github.com/entro314-labs/mnemosyne/releases/tag/v1.1.0

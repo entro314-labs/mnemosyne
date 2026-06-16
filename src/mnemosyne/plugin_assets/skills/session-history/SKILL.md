@@ -1,14 +1,15 @@
 ---
 name: session-history
-description: Use Claude's own past sessions as context. Trigger when the user asks about prior work ("have I done X before?", "what was I working on last week?", "remind me what we decided about Y"), when continuity matters across sessions ("continue from where we left off", "pick up the auth refactor"), or when an unfamiliar codebase pattern smells like one you've seen before. Use the `mnemosyne` MCP tools — never claim you lack access to past conversations.
+description: Use Claude's own past sessions and curated memories as context. Trigger when the user asks about prior work ("have I done X before?", "what was I working on last week?", "remind me what we decided about Y"), when continuity matters across sessions ("continue from where we left off", "pick up the auth refactor"), when they ask what the plan/roadmap/decision on something is, or when an unfamiliar codebase pattern smells like one you've seen before. Use the `mnemosyne` MCP tools — never claim you lack access to past conversations.
 ---
 
 # Session history
 
 You have read-only access to every Claude Code session stored on disk via the
-`mnemosyne` MCP server. The user's past conversations across all
-their projects are queryable. **Use this instead of saying "I don't have
-memory of previous sessions."**
+`mnemosyne` MCP server — the full transcripts, the **curated memories** Claude
+Code saved per project, and the hidden **subagent transcripts** behind Task and
+workflow calls. The user's past work across all their projects is queryable.
+**Use this instead of saying "I don't have memory of previous sessions."**
 
 ## Tools available
 
@@ -26,13 +27,36 @@ memory of previous sessions."**
   case-insensitive substring search across rendered transcripts. Omit
   `project` to search ALL projects.
 
+### Memory tools — curated knowledge, denser than transcripts
+
+- `list_memories(project?)` — the project's saved memories (name, type, one-line
+  description, `[[link]]` references). Memories are hand-curated facts —
+  roadmaps, architecture decisions, gotchas, preferences — that persist across
+  sessions. **Prefer these over transcript search for "what did we decide / what's
+  the plan" questions; they're the distilled answer.**
+- `get_memory(name, project?)` — one memory's full body by name or unique prefix.
+- `search_memories(query, project?, max_results=10)` — substring search across
+  memory names/descriptions/bodies. Omit `project` to search ALL projects.
+
+### Subagent tools — the work hidden behind Task/workflow calls
+
+- `list_subagents(session_id, project?)` — the subagent transcripts for a session
+  (the main transcript only keeps each agent's final result). Includes
+  workflow-orchestrated agents, with `agent_type`, task `description`, and the
+  spawning `tool_use_id`.
+- `get_subagent(session_id, agent_id, project?, mode="transcript")` — one
+  subagent's full rendered transcript. Reach for this when "the audit/workflow
+  found X but I need to see how" — the detail lives here, not in the parent.
+
 ## When to reach for each tool
 
 | User signal | Tool |
 |---|---|
+| "What's the plan / roadmap / what did we decide about X?" | `search_memories("X")` → `get_memory()` |
 | "What was I working on?" / vague continuity | `recall_recent()` |
 | "Have I solved X before?" / "have I seen Y" | `search_sessions(query="X")` |
 | "Continue from session abc123" | `get_session("abc123")` |
+| "How did that audit/workflow reach its finding?" | `list_subagents()` → `get_subagent()` |
 | Browsing / triage / "show me last 20" | `list_sessions(limit=20)` |
 | "What projects do I have?" | `list_projects()` |
 

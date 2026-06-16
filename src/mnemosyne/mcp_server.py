@@ -20,12 +20,14 @@ from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
+from mnemosyne.artifacts import SubagentRef, discover_session_artifacts
 from mnemosyne.config import (
     CLAUDE_PROJECTS,
     ProjectEntry,
     load_settings,
     sync_registry,
 )
+from mnemosyne.memory import collect_memories
 from mnemosyne.parser import (
     list_session_files,
     project_dir_for_cwd,
@@ -282,6 +284,178 @@ def search_sessions(
             if len(hits) >= max_results:
                 return hits
     return hits
+
+
+def _subagent_dict(ref: SubagentRef) -> dict[str, Any]:
+    return {
+        "agent_id": ref.agent_id,
+        "agent_type": ref.agent_type,
+        "description": ref.description,
+        "tool_use_id": ref.tool_use_id,
+        "workflow_id": ref.workflow_id,
+    }
+
+
+@mcp.tool()
+def list_memories(project: str | None = None) -> list[dict[str, Any]]:
+    """List the curated memories Claude Code has saved for a project.
+
+    Memories are durable, hand-curated facts — roadmaps, architecture decisions,
+    gotchas, user preferences — that persist across sessions and are denser and
+    more reliable than transcripts. Reach for these first when the user asks
+    "what did we decide about X?" or "what's the plan for Y?". Returns each
+    memory's name, type (user/feedback/project/reference), description, origin
+    session, and ``[[link]]`` references. Empty when the project has no memories.
+
+    Args:
+        project: slug or absolute path; omit to use the current cwd's project.
+    """
+    coll = collect_memories(_resolve_project(project))
+    return [
+        {
+            "name": m.name,
+            "type": m.type,
+            "description": m.description,
+            "origin_session_id": m.origin_session_id,
+            "links": m.links,
+            "char_count": len(m.body),
+        }
+        for m in coll.memories
+    ]
+
+
+@mcp.tool()
+def get_memory(name: str, project: str | None = None) -> dict[str, Any]:
+    """Return one memory's full body and metadata by name (or unique prefix).
+
+    Args:
+        name: memory name (e.g. ``product-roadmap-mid-2026``) or a unique prefix.
+        project: slug or absolute path; omit for the cwd's project.
+    """
+    coll = collect_memories(_resolve_project(project))
+    exact = [m for m in coll.memories if m.name == name]
+    matches = exact or [m for m in coll.memories if m.name.startswith(name)]
+    if not matches:
+        raise FileNotFoundError(f"No memory named {name!r} in {coll.project_slug}")
+    if len(matches) > 1:
+        raise ValueError(f"{name!r} matches {len(matches)} memories; pass a longer prefix.")
+    m = matches[0]
+    return {
+        "name": m.name,
+        "type": m.type,
+        "description": m.description,
+        "origin_session_id": m.origin_session_id,
+        "links": m.links,
+        "body": m.body,
+    }
+
+
+@mcp.tool()
+def search_memories(
+    query: str,
+    project: str | None = None,
+    max_results: int = 10,
+) -> list[dict[str, Any]]:
+    """Case-insensitive substring search across memory names, descriptions, and bodies.
+
+    Args:
+        query: case-insensitive substring to look for.
+        project: slug or absolute path; omit to search ALL projects.
+        max_results: cap on total matches (default 10).
+    """
+    needle = query.lower()
+    if not needle.strip():
+        return []
+    if project is not None:
+        project_dirs = [_resolve_project(project)]
+    elif CLAUDE_PROJECTS.is_dir():
+        project_dirs = [
+            d for d in CLAUDE_PROJECTS.iterdir() if d.is_dir() and d.name.startswith("-")
+        ]
+    else:
+        return []
+
+    hits: list[dict[str, Any]] = []
+    for pd in project_dirs:
+        for m in collect_memories(pd).memories:
+            haystack = f"{m.name}\n{m.description or ''}\n{m.body}".lower()
+            if needle not in haystack:
+                continue
+            hits.append(
+                {
+                    "name": m.name,
+                    "project_slug": pd.name,
+                    "type": m.type,
+                    "description": m.description,
+                    "origin_session_id": m.origin_session_id,
+                }
+            )
+            if len(hits) >= max_results:
+                return hits
+    return hits
+
+
+@mcp.tool()
+def list_subagents(session_id: str, project: str | None = None) -> list[dict[str, Any]]:
+    """List the subagent transcripts stored for a session.
+
+    The main transcript only keeps a subagent's final result; the full back-and-forth
+    of every spawned agent (including workflow-orchestrated ones) lives in a sibling
+    directory. Use this to see what work happened inside a Task/workflow, then pull
+    one with ``get_subagent``. Returns each agent's id, type, task description,
+    spawning ``tool_use_id``, and workflow id (when run inside a workflow).
+
+    Args:
+        session_id: full UUID or unique prefix of the parent session.
+        project: slug or absolute path; omit for the cwd's project.
+    """
+    project_dir = _resolve_project(project)
+    path = _resolve_session_path(project_dir, session_id)
+    arts = discover_session_artifacts(project_dir, path.stem)
+    out = [_subagent_dict(ref) for ref in arts.subagents]
+    for run in arts.workflow_runs:
+        out.extend(_subagent_dict(ref) for ref in run.agents)
+    return out
+
+
+@mcp.tool()
+def get_subagent(
+    session_id: str,
+    agent_id: str,
+    project: str | None = None,
+    mode: Mode = "transcript",
+    max_tool_chars: int = 2000,
+) -> str:
+    """Return one subagent's full rendered transcript (markdown).
+
+    Args:
+        session_id: full UUID or unique prefix of the parent session.
+        agent_id: the subagent's id (or unique prefix) from ``list_subagents``.
+        project: slug or absolute path; omit for the cwd's project.
+        mode: ``transcript`` (default), ``compact``, or ``full`` — same semantics
+            as ``get_session``.
+        max_tool_chars: per-block truncation for tool I/O in compact/full modes.
+    """
+    project_dir = _resolve_project(project)
+    path = _resolve_session_path(project_dir, session_id)
+    arts = discover_session_artifacts(project_dir, path.stem)
+    refs = [*arts.subagents, *(a for run in arts.workflow_runs for a in run.agents)]
+    exact = [r for r in refs if r.agent_id == agent_id]
+    matches = exact or [r for r in refs if r.agent_id.startswith(agent_id)]
+    if not matches:
+        raise FileNotFoundError(f"No subagent {agent_id!r} for session {path.stem}")
+    if len(matches) > 1:
+        raise ValueError(f"{agent_id!r} matches {len(matches)} subagents; pass a longer prefix.")
+    ref = matches[0]
+    events = read_session(ref.path)
+    desc = f" — {ref.description}" if ref.description else ""
+    title = f"Subagent: {ref.agent_type or 'subagent'}{desc}  \n_agent {ref.agent_id}_"
+    opts = RenderOptions(
+        mode=mode,
+        max_tool_result_chars=max_tool_chars,
+        max_tool_input_chars=max_tool_chars,
+    )
+    return render_markdown(events, title=title, opts=opts, session_id=ref.agent_id)
 
 
 def run() -> None:

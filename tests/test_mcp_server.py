@@ -14,11 +14,16 @@ import pytest
 
 from mnemosyne import config, mcp_server, parser
 from mnemosyne.mcp_server import (
+    get_memory,
     get_session,
     get_session_summary,
+    get_subagent,
+    list_memories,
     list_projects,
     list_sessions,
+    list_subagents,
     recall_recent,
+    search_memories,
     search_sessions,
 )
 
@@ -62,8 +67,42 @@ def fake_claude_home(tmp_path: Path, monkeypatch):
         },
         {"type": "ai-title", "aiTitle": "Investigate auth flow", "sessionId": "fake"},
     ]
-    session_path = project_dir / "abc12345-0000-0000-0000-000000000000.jsonl"
+    full_sid = "abc12345-0000-0000-0000-000000000000"
+    session_path = project_dir / f"{full_sid}.jsonl"
     session_path.write_text("\n".join(json.dumps(r) for r in records) + "\n", encoding="utf-8")
+
+    # Curated memory layer for this project.
+    mem_dir = project_dir / "memory"
+    mem_dir.mkdir()
+    (mem_dir / "the-plan.md").write_text(
+        '---\nname: the-plan\ndescription: "ship v2"\nmetadata:\n  type: project\n---\n'
+        "The roadmap is to ship v2 with JWT auth.\n",
+        encoding="utf-8",
+    )
+
+    # A subagent transcript stored beside the session (hidden from the main transcript).
+    sub_dir = project_dir / full_sid / "subagents"
+    sub_dir.mkdir(parents=True)
+    (sub_dir / "agent-deadbeef01.jsonl").write_text(
+        json.dumps(
+            {
+                "type": "user",
+                "uuid": "su1",
+                "parentUuid": None,
+                "timestamp": "2026-01-01T00:01:00Z",
+                "message": {
+                    "role": "user",
+                    "content": [{"type": "text", "text": "audit the login route"}],
+                },
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (sub_dir / "agent-deadbeef01.meta.json").write_text(
+        json.dumps({"agentType": "Explore", "description": "audit login", "toolUseId": "toolu_x"}),
+        encoding="utf-8",
+    )
 
     # Stub the module-level CLAUDE_PROJECTS in every place that reads it.
     monkeypatch.setattr(config, "CLAUDE_PROJECTS", claude_projects)
@@ -144,3 +183,67 @@ def test_search_sessions_empty_query_returns_empty(fake_claude_home) -> None:
 def test_unknown_session_prefix_raises(fake_claude_home) -> None:
     with pytest.raises(FileNotFoundError, match="No session matching"):
         _call(get_session)(session_id="zzzzzzz", project=fake_claude_home["slug"])
+
+
+# ---- memory tools ----
+
+
+def test_list_memories_returns_curated_facts(fake_claude_home) -> None:
+    mems = _call(list_memories)(project=fake_claude_home["slug"])
+    assert len(mems) == 1
+    assert mems[0]["name"] == "the-plan"
+    assert mems[0]["type"] == "project"
+    assert mems[0]["description"] == "ship v2"
+
+
+def test_get_memory_returns_full_body(fake_claude_home) -> None:
+    m = _call(get_memory)(name="the-plan", project=fake_claude_home["slug"])
+    assert m["description"] == "ship v2"
+    assert "JWT auth" in m["body"]
+
+
+def test_get_memory_unknown_raises(fake_claude_home) -> None:
+    with pytest.raises(FileNotFoundError, match="No memory named"):
+        _call(get_memory)(name="does-not-exist", project=fake_claude_home["slug"])
+
+
+def test_search_memories_finds_body_match(fake_claude_home) -> None:
+    hits = _call(search_memories)(query="roadmap", project=fake_claude_home["slug"])
+    assert len(hits) == 1
+    assert hits[0]["name"] == "the-plan"
+
+
+def test_search_memories_empty_query(fake_claude_home) -> None:
+    assert _call(search_memories)(query="  ", project=fake_claude_home["slug"]) == []
+
+
+# ---- subagent tools ----
+
+
+def test_list_subagents_returns_hidden_agents(fake_claude_home) -> None:
+    subs = _call(list_subagents)(
+        session_id=fake_claude_home["session_id"], project=fake_claude_home["slug"]
+    )
+    assert len(subs) == 1
+    assert subs[0]["agent_id"] == "deadbeef01"
+    assert subs[0]["agent_type"] == "Explore"
+    assert subs[0]["tool_use_id"] == "toolu_x"
+
+
+def test_get_subagent_renders_transcript(fake_claude_home) -> None:
+    md = _call(get_subagent)(
+        session_id=fake_claude_home["session_id"],
+        agent_id="deadbeef01",
+        project=fake_claude_home["slug"],
+    )
+    assert "audit the login route" in md
+    assert "Subagent: Explore" in md
+
+
+def test_get_subagent_unknown_raises(fake_claude_home) -> None:
+    with pytest.raises(FileNotFoundError, match="No subagent"):
+        _call(get_subagent)(
+            session_id=fake_claude_home["session_id"],
+            agent_id="zzzz",
+            project=fake_claude_home["slug"],
+        )

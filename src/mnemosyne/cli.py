@@ -13,6 +13,13 @@ from rich.console import Console
 from rich.prompt import IntPrompt, Prompt
 from rich.table import Table
 
+from mnemosyne.artifact_export import (
+    ArtifactWriteResult,
+    slugify,
+    write_project_memories,
+    write_session_artifacts,
+)
+from mnemosyne.artifacts import ArtifactSelection, discover_session_artifacts
 from mnemosyne.config import (
     CLAUDE_PROJECTS,
     CONFIG_PATH,
@@ -25,6 +32,7 @@ from mnemosyne.config import (
     sync_registry,
 )
 from mnemosyne.formats import Format, render_jsonl, render_plain
+from mnemosyne.memory import collect_memories
 from mnemosyne.parser import (
     SessionSummary,
     list_session_files,
@@ -38,6 +46,54 @@ _VALID_MODES = get_args(Mode)
 _VALID_FORMATS = get_args(Format)
 
 _FORMAT_EXTENSION = {"markdown": ".md", "jsonl": ".jsonl", "plain": ".txt"}
+
+# Artifact-selection flags, shared verbatim by `export`, `export-all`, and the
+# interactive default so their help text and behaviour never drift.
+MemoriesFlag = Annotated[
+    bool,
+    Parameter(
+        name=["--memories"],
+        help="Also export the project's curated memory layer (memory/*.md + index).",
+    ),
+]
+SubagentsFlag = Annotated[
+    bool,
+    Parameter(
+        name=["--subagents"],
+        help="Also export spawned subagent transcripts (rendered like the main transcript).",
+    ),
+]
+SummariesFlag = Annotated[
+    bool,
+    Parameter(
+        name=["--summaries"],
+        help="Also export session-memory handoff digests (session-memory/summary.md).",
+    ),
+]
+WorkflowsFlag = Annotated[
+    bool,
+    Parameter(
+        name=["--workflows"],
+        help="Also export workflow scripts, run journals, and orchestrated subagents.",
+    ),
+]
+ToolResultsFlag = Annotated[
+    bool,
+    Parameter(
+        name=["--tool-results"],
+        help="Also export externalised large tool outputs (deterministically scrubbed).",
+    ),
+]
+FullArtifactsFlag = Annotated[
+    bool,
+    Parameter(
+        name=["--full"],
+        help=(
+            "Export ALL artifact types (memories + subagents + summaries + workflows + "
+            "tool-results). Note: distinct from --mode full, which sets transcript verbosity."
+        ),
+    ),
+]
 
 app = cyclopts.App(
     name="syne",
@@ -128,27 +184,10 @@ def _session_title(s: SessionSummary) -> str:
     return s.ai_title or s.first_user_text or s.session_id
 
 
-_SLUG_KEEP = re.compile(r"[^\w\s-]+", re.UNICODE)
-_SLUG_SQUASH = re.compile(r"[-\s_]+")
-
-
-def _slugify(text: str, max_len: int = 80) -> str:
-    """Title → 'fix-godot-project-initialization-errors'.
-
-    Drops punctuation, collapses whitespace/underscores/hyphens to single '-',
-    lower-cases, trims to max_len. Returns '' if nothing usable remains.
-    """
-    cleaned = _SLUG_KEEP.sub(" ", text).lower().strip()
-    slug = _SLUG_SQUASH.sub("-", cleaned).strip("-")
-    if len(slug) > max_len:
-        slug = slug[:max_len].rstrip("-")
-    return slug
-
-
 def _filename_for(s: SessionSummary, *, fmt: Format = "markdown") -> str:
     """`ai_title` (or first prompt) slugified into a filename, else session id."""
     ext = _FORMAT_EXTENSION[fmt]
-    slug = _slugify(s.ai_title or s.first_user_text or "")
+    slug = slugify(s.ai_title or s.first_user_text or "")
     return f"{slug}{ext}" if slug else f"{s.session_id}{ext}"
 
 
@@ -210,6 +249,9 @@ def _write_export(
     project_slug: str | None = None,
     project_path: str | None = None,
     write_sidecar: bool = True,
+    selection: ArtifactSelection | None = None,
+    project_dir: Path | None = None,
+    artifact_tally: ArtifactWriteResult | None = None,
 ) -> Path:
     events = read_session(s.path)
     rendered = _render_for_format(
@@ -220,7 +262,92 @@ def _write_export(
     out_path.write_text(rendered, encoding="utf-8")
     if write_sidecar:
         _write_session_sidecar(s, out_path, opts, fmt=fmt, project_slug=project_slug)
+    _maybe_write_session_artifacts(
+        s, out_dir, out_path.stem, opts, selection, project_dir, artifact_tally
+    )
     return out_path
+
+
+def _maybe_write_session_artifacts(
+    s: SessionSummary,
+    out_dir: Path,
+    base: str,
+    opts: RenderOptions,
+    selection: ArtifactSelection | None,
+    project_dir: Path | None,
+    tally: ArtifactWriteResult | None,
+) -> None:
+    """Discover and write a session's subagent/summary/workflow/tool-result bundle.
+
+    Subagent and workflow transcripts render with the same ``opts`` (mode + noise
+    scrub) as the main transcript, so the bundle stays consistent with it.
+    """
+    if selection is None or not selection.any_session_scoped or project_dir is None:
+        return
+    arts = discover_session_artifacts(project_dir, s.session_id)
+    res = write_session_artifacts(arts, out_dir, base, opts=opts, selection=selection)
+    if tally is not None:
+        tally.merge(res)
+
+
+def _selection_from(
+    *,
+    memories: bool,
+    subagents: bool,
+    summaries: bool,
+    workflows: bool,
+    tool_results: bool,
+    full: bool,
+) -> ArtifactSelection:
+    return ArtifactSelection.resolve(
+        memories=memories,
+        subagents=subagents,
+        summaries=summaries,
+        workflows=workflows,
+        tool_results=tool_results,
+        full=full,
+    )
+
+
+def _maybe_write_memories(
+    selection: ArtifactSelection,
+    out_dir: Path,
+    project_dir: Path,
+    entry: ProjectEntry | None,
+) -> int:
+    """Write a project's curated memory layer when ``--memories``/``--full`` is set.
+
+    Returns the number of memories written (0 when none / not selected).
+    """
+    if not selection.memories:
+        return 0
+    coll = collect_memories(project_dir)
+    if not coll:
+        return 0
+    write_project_memories(
+        coll,
+        out_dir,
+        project_label=(entry.friendly_name if entry else None),
+        project_path=(entry.local_path if entry else None),
+    )
+    return len(coll.memories)
+
+
+def _report_artifacts(tally: ArtifactWriteResult, memories: int) -> None:
+    """Print a one-line summary of artifacts written, if any."""
+    bits: list[str] = []
+    if memories:
+        bits.append(f"{memories} mem{'ory' if memories == 1 else 'ories'}")
+    if tally.summaries:
+        bits.append(f"{tally.summaries} summary")
+    if tally.subagents:
+        bits.append(f"{tally.subagents} subagents")
+    if tally.workflow_agents or tally.scripts:
+        bits.append(f"{tally.scripts} scripts/{tally.workflow_agents} workflow agents")
+    if tally.tool_results:
+        bits.append(f"{tally.tool_results} tool-results")
+    if bits:
+        console.print(f"[dim]artifacts:[/dim] {', '.join(bits)}")
 
 
 def _write_session_sidecar(
@@ -421,6 +548,12 @@ def interactive(
             help="Force the project chooser even when run from a known workspace.",
         ),
     ] = False,
+    memories: MemoriesFlag = False,
+    subagents: SubagentsFlag = False,
+    summaries: SummariesFlag = False,
+    workflows: WorkflowsFlag = False,
+    tool_results: ToolResultsFlag = False,
+    full: FullArtifactsFlag = False,
 ) -> None:
     """Pick sessions, pick output dir, export. Updates the registry.
 
@@ -483,14 +616,35 @@ def interactive(
 
     opts = _opts_from_settings(settings, mode=mode)
     console.print(f"[dim]mode: {opts.mode}[/dim]")
+    selection = _selection_from(
+        memories=memories,
+        subagents=subagents,
+        summaries=summaries,
+        workflows=workflows,
+        tool_results=tool_results,
+        full=full,
+    )
+    tally = ArtifactWriteResult()
     name_map = _resolve_filenames(targets)
     for s in targets:
-        path = _write_export(s, out_dir, opts, filename=name_map[s.session_id])
+        path = _write_export(
+            s,
+            out_dir,
+            opts,
+            filename=name_map[s.session_id],
+            project_slug=entry.slug,
+            project_path=entry.local_path,
+            selection=selection,
+            project_dir=slug_dir,
+            artifact_tally=tally,
+        )
         console.print(f"[green]✓[/green] {s.session_id[:8]}  →  {path.name}")
 
+    n_mem = _maybe_write_memories(selection, out_dir, slug_dir, entry)
     mark_used(settings, entry.slug)
     save_settings(settings)
     console.print(f"\n[bold]{len(targets)} session(s) exported[/bold]  →  {out_dir}")
+    _report_artifacts(tally, n_mem)
 
 
 # ---- non-interactive commands ----
@@ -558,17 +712,31 @@ def export(
     include_reminders: bool | None = None,
     max_tool_chars: int | None = None,
     sidecar: bool = True,
+    memories: MemoriesFlag = False,
+    subagents: SubagentsFlag = False,
+    summaries: SummariesFlag = False,
+    workflows: WorkflowsFlag = False,
+    tool_results: ToolResultsFlag = False,
+    full: FullArtifactsFlag = False,
 ) -> None:
     """Export a single session (by full UUID or unique prefix) to disk."""
     settings = load_settings()
     pd = _resolve_project_dir(project_dir)
     path = _resolve_session(pd, session_id)
     summary = summarize_session(path)
+    selection = _selection_from(
+        memories=memories,
+        subagents=subagents,
+        summaries=summaries,
+        workflows=workflows,
+        tool_results=tool_results,
+        full=full,
+    )
 
+    # Make sure the entry exists so the {local_path} template (and memory labels) resolve.
+    sync_registry(settings)
+    entry = _entry_for_project_dir(settings, pd)
     if output is None:
-        # Make sure the entry exists so the {local_path} template can resolve.
-        sync_registry(settings)
-        entry = _entry_for_project_dir(settings, pd)
         output = resolve_output_dir(settings.defaults.output_dir, entry=entry)
 
     opts = _opts_from_settings(
@@ -579,6 +747,7 @@ def export(
         include_reminders=include_reminders,
         max_tool_chars=max_tool_chars,
     )
+    tally = ArtifactWriteResult()
 
     if output.suffix:  # explicit filename
         events = read_session(path)
@@ -588,14 +757,29 @@ def export(
         out_path = output
         if sidecar:
             _write_session_sidecar(summary, output, opts, fmt=fmt, project_slug=pd.name)
+        _maybe_write_session_artifacts(
+            summary, output.parent, output.stem, opts, selection, pd, tally
+        )
+        memory_out = output.parent
     else:  # directory
         out_path = _write_export(
-            summary, output, opts, fmt=fmt, project_slug=pd.name, write_sidecar=sidecar
+            summary,
+            output,
+            opts,
+            fmt=fmt,
+            project_slug=pd.name,
+            write_sidecar=sidecar,
+            selection=selection,
+            project_dir=pd,
+            artifact_tally=tally,
         )
+        memory_out = output
 
+    n_mem = _maybe_write_memories(selection, memory_out, pd, entry)
     mark_used(settings, pd.name)
     save_settings(settings)
     console.print(f"✓ Wrote [green]{out_path}[/green]")
+    _report_artifacts(tally, n_mem)
 
 
 @app.command(name="export-all")
@@ -641,10 +825,24 @@ def export_all(
     sidecar: bool = True,
     index: bool = True,
     skip_empty: bool = True,
+    memories: MemoriesFlag = False,
+    subagents: SubagentsFlag = False,
+    summaries: SummariesFlag = False,
+    workflows: WorkflowsFlag = False,
+    tool_results: ToolResultsFlag = False,
+    full: FullArtifactsFlag = False,
 ) -> None:
     """Export every session in a project directory (with optional filters)."""
     settings = load_settings()
     sync_registry(settings)
+    selection = _selection_from(
+        memories=memories,
+        subagents=subagents,
+        summaries=summaries,
+        workflows=workflows,
+        tool_results=tool_results,
+        full=full,
+    )
 
     if all_projects:
         _export_all_projects(
@@ -662,6 +860,7 @@ def export_all(
             sidecar=sidecar,
             index=index,
             skip_empty=skip_empty,
+            selection=selection,
         )
         return
 
@@ -693,6 +892,7 @@ def export_all(
     targets = _apply_filters(candidates, since=since, until=until, matching=matching)
     name_map = _resolve_filenames(targets, fmt=fmt)
 
+    tally = ArtifactWriteResult()
     written = skipped = filtered = 0
     target_ids = {s.session_id for s in targets}
     for summary in all_summaries:
@@ -712,6 +912,9 @@ def export_all(
             project_slug=pd.name,
             project_path=entry.local_path if entry else None,
             write_sidecar=sidecar,
+            selection=selection,
+            project_dir=pd,
+            artifact_tally=tally,
         )
         console.print(f"[green]✓[/green] {summary.session_id[:8]}  →  {out_path.name}")
         written += 1
@@ -728,12 +931,14 @@ def export_all(
         )
         console.print(f"[dim]wrote index:[/dim] {index_path.name}")
 
+    n_mem = _maybe_write_memories(selection, output, pd, entry)
     mark_used(settings, pd.name)
     save_settings(settings)
     summary_line = f"{written} written, {skipped} skipped"
     if filtered:
         summary_line += f", {filtered} filtered out"
     console.print(f"\n[bold]{summary_line}[/bold]  →  {output}")
+    _report_artifacts(tally, n_mem)
 
 
 def _export_all_projects(
@@ -752,6 +957,7 @@ def _export_all_projects(
     sidecar: bool,
     index: bool,
     skip_empty: bool,
+    selection: ArtifactSelection,
 ) -> None:
     """Walk every known project; write each into <output>/<project>/."""
     root = output if output is not None else (Path.home() / "claude-archive")
@@ -766,6 +972,8 @@ def _export_all_projects(
         max_tool_chars=max_tool_chars,
     )
 
+    tally = ArtifactWriteResult()
+    total_memories = 0
     total_written = total_skipped = total_filtered = projects_touched = 0
     for entry in settings.projects.values():
         slug_dir = CLAUDE_PROJECTS / entry.slug
@@ -782,7 +990,7 @@ def _export_all_projects(
             continue
 
         project_label = entry.friendly_name or entry.slug.lstrip("-") or "unnamed"
-        project_dir_name = _slugify(project_label) or _slugify(entry.slug.lstrip("-")) or "unnamed"
+        project_dir_name = slugify(project_label) or slugify(entry.slug.lstrip("-")) or "unnamed"
         project_out = root / project_dir_name
         project_out.mkdir(parents=True, exist_ok=True)
         name_map = _resolve_filenames(targets, fmt=fmt)
@@ -804,6 +1012,9 @@ def _export_all_projects(
                 project_slug=entry.slug,
                 project_path=entry.local_path,
                 write_sidecar=sidecar,
+                selection=selection,
+                project_dir=slug_dir,
+                artifact_tally=tally,
             )
             total_written += 1
 
@@ -817,6 +1028,7 @@ def _export_all_projects(
                 fmt=fmt,
                 mode=opts.mode,
             )
+        total_memories += _maybe_write_memories(selection, project_out, slug_dir, entry)
         projects_touched += 1
         console.print(
             f"[green]✓[/green] {project_label:30s} → {project_out}  ({len(targets)} sessions)"
@@ -826,6 +1038,7 @@ def _export_all_projects(
         f"\n[bold]{total_written} sessions across {projects_touched} projects[/bold] → {root}"
         f"  [dim]({total_skipped} skipped, {total_filtered} filtered)[/dim]"
     )
+    _report_artifacts(tally, total_memories)
 
 
 def _apply_filters(

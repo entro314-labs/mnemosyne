@@ -6,7 +6,6 @@ from mnemosyne.cli import (
     _apply_filters,
     _filename_for,
     _resolve_filenames,
-    _slugify,
 )
 from mnemosyne.parser import SessionSummary
 
@@ -31,34 +30,6 @@ def _summary(
         assistant_count=1,
         size_bytes=1000,
     )
-
-
-# ---- _slugify ----
-
-
-def test_slugify_basic() -> None:
-    assert (
-        _slugify("Fix Godot project initialization errors")
-        == "fix-godot-project-initialization-errors"
-    )
-
-
-def test_slugify_strips_punctuation() -> None:
-    assert _slugify("Can you do X? (please!)") == "can-you-do-x-please"
-
-
-def test_slugify_collapses_whitespace_underscores_hyphens() -> None:
-    assert _slugify("hello___world  --  foo") == "hello-world-foo"
-
-
-def test_slugify_truncates() -> None:
-    long_text = "a" * 200
-    result = _slugify(long_text, max_len=50)
-    assert len(result) <= 50
-
-
-def test_slugify_returns_empty_for_no_alphanumerics() -> None:
-    assert _slugify("---!!!  ___") == ""
 
 
 # ---- _filename_for ----

@@ -1,8 +1,8 @@
 {
   "$schema": "https://json.schemastore.org/claude-code-plugin.json",
   "name": "mnemosyne",
-  "version": "1.2.0",
-  "description": "Browse, search, and recall your Claude Code session history. Adds slash commands and an MCP server that lets Claude reach into past conversations across all your projects.",
+  "version": "1.4.0",
+  "description": "Browse, search, and recall your Claude Code session history, curated memories, and hidden subagent transcripts. Adds slash commands and an MCP server that lets Claude reach into past conversations, decisions, and agent work across all your projects.",
   "author": {
     "name": "Dominikos Pritis",
     "email": "idominikos@outlook.com"
