@@ -18,7 +18,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server import MCPServer
 
 from mnemosyne.artifacts import SubagentRef, discover_session_artifacts
 from mnemosyne.config import (
@@ -47,7 +47,7 @@ from mnemosyne.query import search_sessions as _query_sessions
 from mnemosyne.query import self_align as _query_self_align
 from mnemosyne.render import Mode, RenderOptions, render_markdown
 
-mcp = FastMCP("mnemosyne")
+mcp = MCPServer("mnemosyne")
 
 
 # ---- helpers ----
@@ -70,11 +70,23 @@ def _resolve_project(project: str | None) -> Path:
         if candidate.is_dir():
             return candidate
         raise FileNotFoundError(f"No Claude project recorded for {p}")
-    # Treat as slug.
+    # Treat as a slug, never as a relative filesystem path. Absolute local paths
+    # are supported above; allowing separators here would escape CLAUDE_PROJECTS.
+    if p.name != project or not project.startswith("-"):
+        raise ValueError(f"Invalid project slug: {project!r}")
     candidate = CLAUDE_PROJECTS / project
     if not candidate.is_dir():
         raise FileNotFoundError(f"Unknown project slug: {project}")
     return candidate
+
+
+def _resolve_project_scope(project: str | None, *, all_projects: bool) -> list[Path]:
+    """Resolve an explicit all-project scope or the current/specified project."""
+    if project is not None and all_projects:
+        raise ValueError("Pass either `project` or `all_projects=True`, not both.")
+    if all_projects:
+        return all_project_dirs(CLAUDE_PROJECTS)
+    return [_resolve_project(project)]
 
 
 def _resolve_session_path(project_dir: Path, session_id: str) -> Path:
@@ -208,6 +220,7 @@ def recall_recent(
 def search_sessions(
     query: str,
     project: str | None = None,
+    all_projects: bool = False,
     max_results: int = 10,
     context_chars: int = 200,
 ) -> list[dict[str, Any]]:
@@ -219,11 +232,12 @@ def search_sessions(
 
     Args:
         query: case-insensitive substring to look for.
-        project: slug or absolute path; omit to search ALL projects.
+        project: slug or absolute path; omit to use the current cwd's project.
+        all_projects: explicitly search every project. Cannot be combined with project.
         max_results: cap on total matches (default 10).
         context_chars: characters of context to include on either side of the hit.
     """
-    dirs = [_resolve_project(project)] if project is not None else all_project_dirs(CLAUDE_PROJECTS)
+    dirs = _resolve_project_scope(project, all_projects=all_projects)
     return _query_sessions(dirs, query, load_settings(), max_results, context_chars)
 
 
@@ -269,16 +283,18 @@ def get_memory(name: str, project: str | None = None) -> dict[str, Any]:
 def search_memories(
     query: str,
     project: str | None = None,
+    all_projects: bool = False,
     max_results: int = 10,
 ) -> list[dict[str, Any]]:
     """Case-insensitive substring search across memory names, descriptions, and bodies.
 
     Args:
         query: case-insensitive substring to look for.
-        project: slug or absolute path; omit to search ALL projects.
+        project: slug or absolute path; omit to use the current cwd's project.
+        all_projects: explicitly search every project. Cannot be combined with project.
         max_results: cap on total matches (default 10).
     """
-    dirs = [_resolve_project(project)] if project is not None else all_project_dirs(CLAUDE_PROJECTS)
+    dirs = _resolve_project_scope(project, all_projects=all_projects)
     return _query_memories(dirs, query, max_results)
 
 
@@ -349,6 +365,7 @@ def get_subagent(
 def self_align(
     query: str | None = None,
     project: str | None = None,
+    all_projects: bool = False,
     max_chars: int = 6000,
 ) -> dict[str, Any]:
     """One bounded retrieval packet to self-align before working — the preferred start.
@@ -366,11 +383,11 @@ def self_align(
     Args:
         query: topic to align on (e.g. "auth", "billing"). Omit for a general
             "what is this project / what was I doing" brief.
-        project: slug or absolute path; omit for the cwd's project (use ALL projects
-            only when the user explicitly asks).
+        project: slug or absolute path; omit for the cwd's project.
+        all_projects: explicitly span every project. Cannot be combined with project.
         max_chars: soft cap; the packet is trimmed (hits → recent → memories) to fit.
     """
-    dirs = [_resolve_project(project)] if project is not None else all_project_dirs(CLAUDE_PROJECTS)
+    dirs = _resolve_project_scope(project, all_projects=all_projects)
     packet = _query_self_align(dirs, load_settings(), query=query)
     return fit_packet(packet, max_chars)
 
@@ -394,7 +411,7 @@ def get_session_handoff(session_id: str, project: str | None = None) -> dict[str
 
 
 def run() -> None:
-    """Entry point for ``syne mcp`` — runs the FastMCP server on stdio."""
+    """Entry point for ``syne mcp`` — runs the MCP server on stdio."""
     mcp.run()
 
 

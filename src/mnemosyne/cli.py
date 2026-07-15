@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import json
 import re
+from datetime import UTC, date, datetime, time, timedelta
+from hashlib import sha256
 from pathlib import Path
-from typing import Annotated, get_args
+from typing import Annotated, cast, get_args
 
 import cyclopts
 from cyclopts import Parameter
@@ -13,6 +15,7 @@ from rich.console import Console
 from rich.prompt import IntPrompt, Prompt
 from rich.table import Table
 
+from mnemosyne import __version__
 from mnemosyne.align import apply_to_file, is_available, render_block, target_files
 from mnemosyne.artifact_export import (
     ArtifactWriteResult,
@@ -101,6 +104,7 @@ FullArtifactsFlag = Annotated[
 app = cyclopts.App(
     name="syne",
     help="Export Claude Code session JSONL files to readable markdown.",
+    version=__version__,
 )
 console = Console()
 err_console = Console(stderr=True, style="red")
@@ -179,7 +183,7 @@ def _opts_from_settings(
 
 def _coerce_mode(value: str) -> Mode:
     if value in _VALID_MODES:
-        return value  # type: ignore[return-value]
+        return cast("Mode", value)
     return "transcript"
 
 
@@ -211,8 +215,34 @@ def _resolve_filenames(
             continue
         stem = name[: -len(ext)] if name.endswith(ext) else name
         for s in group:
-            out[s.session_id] = f"{stem}-{s.session_id[:8]}{ext}"
+            prefix_len = 8
+            while any(
+                other.session_id != s.session_id
+                and other.session_id[:prefix_len] == s.session_id[:prefix_len]
+                for other in group
+            ):
+                prefix_len += 1
+            out[s.session_id] = f"{stem}-{s.session_id[:prefix_len]}{ext}"
     return out
+
+
+def _project_output_names(entries: list[ProjectEntry]) -> dict[str, str]:
+    """Stable, non-colliding directory names for a cross-project export."""
+    bases = {
+        entry.slug: (
+            slugify(entry.friendly_name or entry.slug.lstrip("-"))
+            or slugify(entry.slug.lstrip("-"))
+            or "unnamed"
+        )
+        for entry in entries
+    }
+    counts: dict[str, int] = {}
+    for base in bases.values():
+        counts[base] = counts.get(base, 0) + 1
+    return {
+        slug: base if counts[base] == 1 else f"{base}-{sha256(slug.encode()).hexdigest()[:8]}"
+        for slug, base in bases.items()
+    }
 
 
 def _render_for_format(
@@ -594,21 +624,21 @@ def interactive(
 
     slug_dir = CLAUDE_PROJECTS / entry.slug
 
-    summaries = sorted(
+    session_summaries = sorted(
         (summarize_session(p) for p in list_session_files(slug_dir)),
         key=lambda s: s.last_timestamp or "",
         reverse=True,
     )
-    if not summaries:
+    if not session_summaries:
         err_console.print("No sessions in selected project.")
         return
 
-    _render_session_table(summaries)
+    _render_session_table(session_summaries)
     selection = Prompt.ask(
         "Sessions to export (e.g. '1', '1,3-5', or 'all')",
         default="all",
     )
-    targets = [summaries[i] for i in _parse_selection(selection, len(summaries))]
+    targets = [session_summaries[i] for i in _parse_selection(selection, len(session_summaries))]
     if not targets:
         err_console.print("No sessions selected.")
         return
@@ -628,7 +658,7 @@ def interactive(
         full=full,
     )
     tally = ArtifactWriteResult()
-    name_map = _resolve_filenames(targets)
+    name_map = _resolve_filenames(session_summaries)
     for s in targets:
         path = _write_export(
             s,
@@ -752,9 +782,16 @@ def export(
     )
     tally = ArtifactWriteResult()
 
-    if output.suffix:  # explicit filename
+    if output.suffix and not output.is_dir():  # explicit filename
         events = read_session(path)
-        rendered = _render_for_format(summary, events, opts, fmt=fmt, project_slug=pd.name)
+        rendered = _render_for_format(
+            summary,
+            events,
+            opts,
+            fmt=fmt,
+            project_slug=pd.name,
+            project_path=entry.local_path if entry else None,
+        )
         output.parent.mkdir(parents=True, exist_ok=True)
         output.write_text(rendered, encoding="utf-8")
         out_path = output
@@ -765,12 +802,16 @@ def export(
         )
         memory_out = output.parent
     else:  # directory
+        all_summaries = [summarize_session(p) for p in list_session_files(pd)]
+        name_map = _resolve_filenames(all_summaries, fmt=fmt)
         out_path = _write_export(
             summary,
             output,
             opts,
+            filename=name_map[summary.session_id],
             fmt=fmt,
             project_slug=pd.name,
+            project_path=entry.local_path if entry else None,
             write_sidecar=sidecar,
             selection=selection,
             project_dir=pd,
@@ -893,7 +934,7 @@ def export_all(
     all_summaries = [summarize_session(p) for p in files]
     candidates = [s for s in all_summaries if not (skip_empty and s.message_count == 0)]
     targets = _apply_filters(candidates, since=since, until=until, matching=matching)
-    name_map = _resolve_filenames(targets, fmt=fmt)
+    name_map = _resolve_filenames(all_summaries, fmt=fmt)
 
     tally = ArtifactWriteResult()
     written = skipped = filtered = 0
@@ -975,10 +1016,17 @@ def _export_all_projects(
         max_tool_chars=max_tool_chars,
     )
 
+    eligible_entries = [
+        entry
+        for entry in settings.projects.values()
+        if (CLAUDE_PROJECTS / entry.slug).is_dir()
+        and list_session_files(CLAUDE_PROJECTS / entry.slug)
+    ]
+    output_names = _project_output_names(eligible_entries)
     tally = ArtifactWriteResult()
     total_memories = 0
     total_written = total_skipped = total_filtered = projects_touched = 0
-    for entry in settings.projects.values():
+    for entry in eligible_entries:
         slug_dir = CLAUDE_PROJECTS / entry.slug
         if not slug_dir.is_dir():
             continue
@@ -989,14 +1037,14 @@ def _export_all_projects(
         all_summaries = [summarize_session(p) for p in files]
         candidates = [s for s in all_summaries if not (skip_empty and s.message_count == 0)]
         targets = _apply_filters(candidates, since=since, until=until, matching=matching)
-        if not targets:
+        has_memories = selection.memories and bool(collect_memories(slug_dir))
+        if not targets and not has_memories:
             continue
 
         project_label = entry.friendly_name or entry.slug.lstrip("-") or "unnamed"
-        project_dir_name = slugify(project_label) or slugify(entry.slug.lstrip("-")) or "unnamed"
-        project_out = root / project_dir_name
+        project_out = root / output_names[entry.slug]
         project_out.mkdir(parents=True, exist_ok=True)
-        name_map = _resolve_filenames(targets, fmt=fmt)
+        name_map = _resolve_filenames(all_summaries, fmt=fmt)
 
         target_ids = {s.session_id for s in targets}
         for summary in all_summaries:
@@ -1021,7 +1069,7 @@ def _export_all_projects(
             )
             total_written += 1
 
-        if index:
+        if index and targets:
             _write_project_index(
                 project_out,
                 targets,
@@ -1052,21 +1100,62 @@ def _apply_filters(
     matching: str | None,
 ) -> list[SessionSummary]:
     """Keep sessions whose last_timestamp falls in [since, until] AND whose
-    title / first prompt matches `matching` (regex, case-insensitive)."""
-    pattern = re.compile(matching, re.IGNORECASE) if matching else None
+    title / first prompt matches `matching` (regex, case-sensitive by default)."""
+    pattern = re.compile(matching) if matching else None
+    since_dt = _parse_filter_bound(since, end_of_day=False) if since else None
+    until_dt = _parse_filter_bound(until, end_of_day=True) if until else None
     out: list[SessionSummary] = []
     for s in summaries:
         ts = s.last_timestamp or s.first_timestamp or ""
-        if since and ts and ts < since:
-            continue
-        if until and ts and ts > until:
-            continue
+        if since_dt is not None or until_dt is not None:
+            parsed_ts = _parse_session_timestamp(ts)
+            if parsed_ts is None:
+                continue
+            if since_dt is not None and parsed_ts < since_dt:
+                continue
+            if until_dt is not None:
+                if _is_date_only(until or ""):
+                    if parsed_ts >= until_dt:
+                        continue
+                elif parsed_ts > until_dt:
+                    continue
         if pattern is not None:
             haystack = " ".join(filter(None, [s.ai_title, s.first_user_text]))
             if not pattern.search(haystack):
                 continue
         out.append(s)
     return out
+
+
+def _is_date_only(value: str) -> bool:
+    return re.fullmatch(r"\d{4}-\d{2}-\d{2}", value.strip()) is not None
+
+
+def _parse_filter_bound(value: str, *, end_of_day: bool) -> datetime:
+    raw = value.strip()
+    try:
+        if _is_date_only(raw):
+            day = date.fromisoformat(raw)
+            start = datetime.combine(day, time.min, tzinfo=UTC)
+            return start + timedelta(days=1) if end_of_day else start
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ValueError(f"Invalid ISO 8601 date/time: {value!r}") from exc
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
+
+
+def _parse_session_timestamp(value: str) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
 
 
 @app.command
@@ -1139,6 +1228,8 @@ def merge(
         )
 
     targets: list[tuple[SessionSummary, Path]]  # (summary, project_dir)
+    if last is not None and last <= 0:
+        raise SystemExit("error: --last must be a positive integer.")
 
     if all_projects:
         sync_registry(settings)
@@ -1152,16 +1243,17 @@ def merge(
                 if s.message_count > 0:
                     raw_pairs.append((s, slug_dir))
         kept = {
-            s.session_id
+            id(s)
             for s in _apply_filters(
                 [s for s, _ in raw_pairs], since=since, until=until, matching=matching
             )
         }
-        targets = [(s, pd) for (s, pd) in raw_pairs if s.session_id in kept]
+        targets = [(s, pd) for (s, pd) in raw_pairs if id(s) in kept]
     elif all_from:
         pd = _resolve_project_for_merge(all_from)
         files = list_session_files(pd)
-        summaries = [summarize_session(p) for p in files if summarize_session(p).message_count > 0]
+        summaries = [summarize_session(p) for p in files]
+        summaries = [summary for summary in summaries if summary.message_count > 0]
         filtered = _apply_filters(summaries, since=since, until=until, matching=matching)
         targets = [(s, pd) for s in filtered]
     else:
@@ -1174,13 +1266,13 @@ def merge(
     if not targets:
         raise SystemExit("error: no sessions matched (after filters).")
 
-    targets.sort(key=lambda pair: pair[0].first_timestamp or pair[0].last_timestamp or "")
+    targets.sort(key=lambda pair: _summary_timestamp(pair[0], prefer_first=True))
 
-    if last is not None and last > 0:
+    if last is not None:
         # Take the N most-recent (by last_timestamp), then re-sort chronologically.
-        targets.sort(key=lambda pair: pair[0].last_timestamp or "", reverse=True)
+        targets.sort(key=lambda pair: _summary_timestamp(pair[0]), reverse=True)
         targets = targets[:last]
-        targets.sort(key=lambda pair: pair[0].first_timestamp or pair[0].last_timestamp or "")
+        targets.sort(key=lambda pair: _summary_timestamp(pair[0], prefer_first=True))
 
     opts = _opts_from_settings(
         settings,
@@ -1215,17 +1307,30 @@ def _resolve_project_for_merge(name_or_path: str) -> Path:
     p = Path(name_or_path)
     if p.is_absolute() and p.is_dir():
         return project_dir_for_cwd(p) if project_dir_for_cwd(p).is_dir() else p
-    if (CLAUDE_PROJECTS / name_or_path).is_dir():
+    if p.name == name_or_path and name_or_path.startswith("-") and (CLAUDE_PROJECTS / p).is_dir():
         return CLAUDE_PROJECTS / name_or_path
     # Try friendly_name lookup in the registry.
     settings = load_settings()
     sync_registry(settings)
-    for entry in settings.projects.values():
-        if entry.friendly_name == name_or_path:
-            slug_dir = CLAUDE_PROJECTS / entry.slug
-            if slug_dir.is_dir():
-                return slug_dir
+    matches = [
+        CLAUDE_PROJECTS / entry.slug
+        for entry in settings.projects.values()
+        if entry.friendly_name == name_or_path and (CLAUDE_PROJECTS / entry.slug).is_dir()
+    ]
+    if len(matches) == 1:
+        return matches[0]
+    if len(matches) > 1:
+        slugs = ", ".join(path.name for path in matches)
+        raise SystemExit(
+            f"error: project name {name_or_path!r} is ambiguous; pass one of these slugs: {slugs}"
+        )
     raise SystemExit(f"error: cannot resolve project {name_or_path!r}")
+
+
+def _summary_timestamp(summary: SessionSummary, *, prefer_first: bool = False) -> datetime:
+    primary = summary.first_timestamp if prefer_first else summary.last_timestamp
+    fallback = summary.last_timestamp if prefer_first else summary.first_timestamp
+    return _parse_session_timestamp(primary or fallback or "") or datetime.min.replace(tzinfo=UTC)
 
 
 def _render_merged(
@@ -1462,6 +1567,8 @@ def align(
         return
 
     local = (path or Path.cwd()).resolve()
+    if not remove and not local.is_dir():
+        raise SystemExit(f"error: project root not found: {local}")
     if claude_only and agents_only:
         raise SystemExit("error: --claude-only and --agents-only are mutually exclusive.")
     files = target_files(local, claude=not agents_only, agents=not claude_only)

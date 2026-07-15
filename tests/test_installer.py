@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING
 
+import pytest
+
 from mnemosyne import installer
 
 if TYPE_CHECKING:
@@ -127,3 +129,23 @@ def test_uninstall_preserves_other_marketplaces(tmp_path, monkeypatch) -> None:
     data = json.loads(known.read_text(encoding="utf-8"))
     assert "other-marketplace" in data
     assert installer.MARKETPLACE_KEY not in data
+
+
+def test_install_refuses_to_overlay_unrelated_directory(tmp_path, monkeypatch) -> None:
+    install_path, _ = _patched_paths(tmp_path, monkeypatch)
+    install_path.mkdir(parents=True)
+    sentinel = install_path / "keep.txt"
+    sentinel.write_text("mine", encoding="utf-8")
+    with pytest.raises(ValueError, match="non-mnemosyne"):
+        installer.install_plugin(install_path)
+    assert sentinel.read_text(encoding="utf-8") == "mine"
+
+
+def test_install_preserves_malformed_marketplace_registry(tmp_path, monkeypatch) -> None:
+    install_path, known = _patched_paths(tmp_path, monkeypatch)
+    known.parent.mkdir(parents=True)
+    known.write_text("{broken", encoding="utf-8")
+    with pytest.raises(ValueError, match="malformed marketplace registry"):
+        installer.install_plugin(install_path)
+    assert known.read_text(encoding="utf-8") == "{broken"
+    assert not install_path.exists()

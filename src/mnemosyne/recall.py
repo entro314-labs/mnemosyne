@@ -40,7 +40,33 @@ def _ts(value: str | None) -> str:
 def _cap(text: str, max_chars: int) -> str:
     if max_chars <= 0 or len(text) <= max_chars:
         return text
-    return text[:max_chars].rstrip() + f"\n… [truncated {len(text) - max_chars} chars]"
+    marker = "\n… [truncated]"
+    if max_chars <= len(marker):
+        return text[:max_chars]
+    return text[: max_chars - len(marker)].rstrip() + marker
+
+
+def _capped_json(payload: dict[str, Any], max_chars: int) -> str:
+    """Serialize a recall payload without ever cutting JSON syntax in half."""
+
+    def render(value: dict[str, Any]) -> str:
+        return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+
+    out = dict(payload)
+    out["items"] = list(payload.get("items", []))
+    text = render(out)
+    if max_chars <= 0 or len(text) <= max_chars:
+        return text
+    out["truncated"] = True
+    while out["items"]:
+        out["items"].pop()
+        text = render(out)
+        if len(text) <= max_chars:
+            return text
+    raise ValueError(
+        f"max_chars={max_chars} is too small for valid JSON recall output "
+        f"({len(text)} characters required)"
+    )
 
 
 def _gather(
@@ -63,12 +89,12 @@ def _gather(
         rows: list[dict[str, Any]] = []
         for pd in dirs:
             rows.extend(query.memory_entries(pd))
-        return "memory_index", rows
+        return "memory_index", rows[:limit]
     recent: list[dict[str, Any]] = []
     for pd in dirs:
         recent.extend(query.recent_sessions(pd, limit, settings))
     recent.sort(key=lambda r: r.get("last_timestamp") or "", reverse=True)
-    return "recent", recent[:limit] if len(dirs) == 1 else recent
+    return "recent", recent[:limit]
 
 
 def _render_markdown(kind: str, rows: list[dict[str, Any]], *, multi_project: bool) -> str:
@@ -122,21 +148,29 @@ def _render_bundle(p: dict[str, Any]) -> str:
         meta.append(f'query "{p["query"]}"')
     if meta:
         lines.append("_" + " · ".join(meta) + "_")
+    multi_project = len(p.get("project_slugs", [])) > 1
+
+    def project_suffix(row: dict[str, Any]) -> str:
+        slug = row.get("project_slug")
+        return f" · _{str(slug).lstrip('-')}_" if multi_project and slug else ""
+
     if p.get("memories"):
         lines.append("\n**Curated memories**")
         for m in p["memories"]:
             t = f" ({m['type']})" if m.get("type") else ""
-            lines.append(f"- **{m['name']}**{t} — {_short(m.get('description'))}")
+            lines.append(
+                f"- **{m['name']}**{t}{project_suffix(m)} — {_short(m.get('description'))}"
+            )
     if p.get("recent_sessions"):
         lines.append("\n**Recent sessions**")
         for r in p["recent_sessions"]:
             sid, ts = r["session_id"][:8], _ts(r.get("last_timestamp"))
-            lines.append(f"- `{sid}` · {ts} · {_short(r.get('title'))}")
+            lines.append(f"- `{sid}` · {ts} · {_short(r.get('title'))}{project_suffix(r)}")
     if p.get("session_hits"):
         lines.append("\n**Transcript hits**")
         for h in p["session_hits"]:
             sid, snip = h["session_id"][:8], _short(h.get("snippet"), 160)
-            lines.append(f"- `{sid}` · {_short(h.get('title'))}  …{snip}…")
+            lines.append(f"- `{sid}` · {_short(h.get('title'))}{project_suffix(h)}  …{snip}…")
     if p.get("suggested_next"):
         lines.append("\n**Suggested next**")
         for s in p["suggested_next"]:
@@ -157,7 +191,7 @@ def build_bundle(
     """Render the aggregated self-align packet (the one-call entry point), capped."""
     packet = query.fit_packet(query.self_align(dirs, settings, query=query_str), max_chars)
     if fmt == "json":
-        return _cap(json.dumps(packet, ensure_ascii=False, indent=2), max_chars)
+        return json.dumps(packet, ensure_ascii=False, separators=(",", ":"))
     return _cap(_render_bundle(packet), max_chars)
 
 
@@ -177,6 +211,10 @@ def build_recall(
     ``query_str`` set → search; otherwise recent sessions (or the memory index
     when ``memories`` is set). Output is hard-capped at ``max_chars``.
     """
+    if limit < 0:
+        raise ValueError("limit must be non-negative")
+    if context_chars < 0:
+        raise ValueError("context_chars must be non-negative")
     kind, rows = _gather(
         dirs,
         settings,
@@ -186,5 +224,5 @@ def build_recall(
         context_chars=context_chars,
     )
     if fmt == "json":
-        return _cap(json.dumps({"kind": kind, "items": rows}, ensure_ascii=False), max_chars)
+        return _capped_json({"kind": kind, "items": rows}, max_chars)
     return _cap(_render_markdown(kind, rows, multi_project=len(dirs) != 1), max_chars)

@@ -1,8 +1,8 @@
 """Tests for mcp_server.py — verify each tool returns the expected shape.
 
-The MCP tools are plain functions wrapped by FastMCP. We unwrap via
-``.fn`` (FastMCP exposes the original callable) so we can call them
-directly without a transport.
+The MCP tools remain plain callables after MCPServer registration, so tests can
+call them directly without a transport. ``_call`` retains the old ``.fn``
+fallback for fixtures created with earlier SDK versions.
 """
 
 from __future__ import annotations
@@ -117,6 +117,7 @@ def fake_claude_home(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(config, "CLAUDE_PROJECTS", claude_projects)
     monkeypatch.setattr(mcp_server, "CLAUDE_PROJECTS", claude_projects)
     monkeypatch.setattr(parser, "project_dir_for_cwd", lambda cwd: project_dir)
+    monkeypatch.setattr(mcp_server, "project_dir_for_cwd", lambda cwd: project_dir)
     # Force load_settings to use a temp config file so we don't pollute the real one.
     config_path = tmp_path / "config.toml"
     monkeypatch.setattr(config, "CONFIG_PATH", config_path)
@@ -125,7 +126,7 @@ def fake_claude_home(tmp_path: Path, monkeypatch):
 
 
 def _call(tool):
-    """FastMCP wraps the function; unwrap to call directly in tests."""
+    """Return the registered function, unwrapping older SDK wrappers if needed."""
     return tool.fn if hasattr(tool, "fn") else tool
 
 
@@ -187,6 +188,36 @@ def test_search_sessions_no_match(fake_claude_home) -> None:
 
 def test_search_sessions_empty_query_returns_empty(fake_claude_home) -> None:
     assert _call(search_sessions)(query="   ", project=fake_claude_home["slug"]) == []
+
+
+def test_search_sessions_defaults_to_current_project(fake_claude_home) -> None:
+    hits = _call(search_sessions)(query="JWT")
+    assert len(hits) == 1
+    assert hits[0]["project_slug"] == fake_claude_home["slug"]
+
+
+def test_cross_project_search_requires_explicit_flag(fake_claude_home) -> None:
+    other = fake_claude_home["project_dir"].parent / "-other-project"
+    other.mkdir()
+    (other / "other.jsonl").write_text(
+        json.dumps(
+            {
+                "type": "user",
+                "timestamp": "2026-01-02T00:00:00Z",
+                "message": {"content": [{"type": "text", "text": "cross-project-only"}]},
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    assert _call(search_sessions)(query="cross-project-only") == []
+    hits = _call(search_sessions)(query="cross-project-only", all_projects=True)
+    assert [hit["project_slug"] for hit in hits] == ["-other-project"]
+
+
+def test_project_slug_rejects_relative_path_traversal(fake_claude_home) -> None:
+    with pytest.raises(ValueError, match="Invalid project slug"):
+        _call(list_sessions)(project="../../tmp")
 
 
 def test_unknown_session_prefix_raises(fake_claude_home) -> None:

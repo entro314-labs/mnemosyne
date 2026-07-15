@@ -15,12 +15,11 @@ strips exactly that span. mnemosyne never edits content outside its markers.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+import os
+import tempfile
+from pathlib import Path
 
 from mnemosyne.parser import project_dir_for_cwd
-
-if TYPE_CHECKING:
-    from pathlib import Path
 
 BEGIN = "<!-- mnemosyne:begin (managed by `syne align`; edits inside are overwritten) -->"
 END = "<!-- mnemosyne:end -->"
@@ -77,12 +76,18 @@ def render_block() -> str:
 
 
 def _region_bounds(text: str) -> tuple[int, int] | None:
-    i = text.find(BEGIN)
-    if i == -1:
+    begin_count = text.count(BEGIN)
+    end_count = text.count(END)
+    if begin_count == 0 and end_count == 0:
         return None
+    if begin_count != 1 or end_count != 1:
+        raise ValueError(
+            "Malformed mnemosyne region: expected exactly one begin marker and one end marker."
+        )
+    i = text.find(BEGIN)
     j = text.find(END, i)
     if j == -1:
-        return None
+        raise ValueError("Malformed mnemosyne region: end marker appears before begin marker.")
     return i, j + len(END)
 
 
@@ -92,13 +97,15 @@ def has_region(text: str) -> bool:
 
 def upsert_region(text: str, block: str) -> str:
     """Replace an existing mnemosyne region, or append one to the end of ``text``."""
-    body = block.strip()
+    body = block.rstrip("\n")
     bounds = _region_bounds(text)
     if bounds is not None:
         i, k = bounds
         return text[:i] + body + text[k:]
-    base = text.rstrip()
-    return f"{base}\n\n{body}\n" if base else f"{body}\n"
+    if not text:
+        return f"{body}\n"
+    separator = "" if text.endswith("\n\n") else ("\n" if text.endswith("\n") else "\n\n")
+    return f"{text}{separator}{body}\n"
 
 
 def strip_region(text: str) -> str:
@@ -107,16 +114,30 @@ def strip_region(text: str) -> str:
     if bounds is None:
         return text
     i, k = bounds
-    before = text[:i].rstrip()
-    after = text[k:].lstrip()
-    if before and after:
-        return f"{before}\n\n{after}" if after.endswith("\n") else f"{before}\n\n{after}\n"
-    joined = (before + after).strip()
-    return f"{joined}\n" if joined else ""
+    updated = text[:i] + text[k:]
+    return "" if not updated.strip() else updated
 
 
 # Outcomes of applying the directive to one file.
 Outcome = str  # "created" | "written" | "unchanged" | "removed" | "absent"
+
+
+def _write_text_atomic(path: Path, text: str) -> None:
+    """Replace an instruction file atomically, preserving its mode when it exists."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    mode = path.stat().st_mode if path.exists() else None
+    fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent, text=True)
+    tmp = path.parent / Path(tmp_name).name
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        if mode is not None:
+            tmp.chmod(mode)
+        tmp.replace(path)
+    finally:
+        tmp.unlink(missing_ok=True)
 
 
 def apply_to_file(path: Path, *, remove: bool = False) -> Outcome:
@@ -126,14 +147,13 @@ def apply_to_file(path: Path, *, remove: bool = False) -> Outcome:
         updated = strip_region(existing)
         if updated == existing:
             return "absent"
-        path.write_text(updated, encoding="utf-8")
+        _write_text_atomic(path, updated)
         return "removed"
     updated = upsert_region(existing, render_block())
     if updated == existing:
         return "unchanged"
     existed = path.is_file()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(updated, encoding="utf-8")
+    _write_text_atomic(path, updated)
     return "written" if existed else "created"
 
 

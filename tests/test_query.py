@@ -195,8 +195,13 @@ def test_fit_packet_trims_to_budget(tmp_path: Path) -> None:
     packet = self_align([pd], Settings(), query="JWT")
     import json  # noqa: PLC0415
 
-    tiny = fit_packet(packet, 400)
-    assert len(json.dumps(tiny, ensure_ascii=False)) <= 400 or len(tiny["memories"]) == 1
-    # never trims below the top memory match
+    tiny = fit_packet(packet, 800)
+    assert len(json.dumps(tiny, ensure_ascii=False)) <= 800
     assert len(tiny["memories"]) >= 1
     assert tiny["guidance"] == packet["guidance"]
+
+
+def test_fit_packet_rejects_budget_smaller_than_minimum_policy_packet(tmp_path: Path) -> None:
+    packet = self_align([_make_project(tmp_path)], Settings(), query="JWT")
+    with pytest.raises(ValueError, match="too small"):
+        fit_packet(packet, 100)

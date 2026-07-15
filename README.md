@@ -202,17 +202,17 @@ handoff digests, and hidden subagent transcripts:
 
 | Tool | Purpose |
 | --- | --- |
-| `self_align(query?, project?, max_chars=6000)` | **Start here.** One bounded packet: memory matches/index + recent summaries + transcript snippets + `suggested_next` calls + guidance. No full bodies/transcripts — pull those via the suggestions. |
+| `self_align(query?, project?, all_projects=false, max_chars=6000)` | **Start here.** One bounded packet: memory matches/index + recent summaries + transcript snippets + `suggested_next` calls + guidance. Current project by default; cross-project only when explicit. No full bodies/transcripts. |
 | `list_projects()` | Every project with sessions, sorted most-recent-used. |
 | `list_sessions(project?, limit=20)` | Newest sessions in a project. |
 | `get_session_summary(session_id, project?)` | Cheap header — no transcript loading. |
 | `get_session_handoff(session_id, project?)` | The compaction handoff digest (Title / Current State / Next steps) — "where we left off", cheaper than a transcript. |
 | `get_session(session_id, project?, mode="transcript", max_tool_chars=2000)` | Rendered markdown for one session. |
 | `recall_recent(project?, limit=5)` | Last N session summaries for the current project. |
-| `search_sessions(query, project?, max_results=10, context_chars=200)` | Case-insensitive substring search across rendered transcripts. |
+| `search_sessions(query, project?, all_projects=false, max_results=10, context_chars=200)` | Case-insensitive substring search across rendered transcripts. Current project by default; cross-project only when explicit. |
 | `list_memories(project?)` | Curated memories for a project (name, type, description, links). |
 | `get_memory(name, project?)` | One memory's full body + metadata, by name or prefix. |
-| `search_memories(query, project?, max_results=10)` | Substring search across memory names/descriptions/bodies. Omit `project` to search all. |
+| `search_memories(query, project?, all_projects=false, max_results=10)` | Substring search across memory names/descriptions/bodies. Current project by default; cross-project only when explicit. |
 | `list_subagents(session_id, project?)` | The subagent transcripts behind a session's Task/workflow calls. |
 | `get_subagent(session_id, agent_id, project?, mode="transcript")` | One subagent's full rendered transcript. |
 
@@ -363,7 +363,7 @@ src/mnemosyne/
   recall.py         # `syne recall` — capped, headers-first stdout brief for hooks / non-MCP agents
   align.py          # `syne align` — idempotent CLAUDE.md/AGENTS.md self-alignment directive writer
   cli.py            # cyclopts app: list / export / export-all / merge / recall / align / install / mcp
-  mcp_server.py     # FastMCP server with 13 read-only tools (self_align + sessions + memories + subagents)
+  mcp_server.py     # MCPServer with 13 read-only tools (self_align + sessions + memories + subagents)
   installer.py      # syne install / uninstall — deploys plugin to ~/.claude/plugins/
   plugin_assets/    # bundled plugin templates (.claude-plugin/, skills/, commands/, .mcp.json)
 tests/

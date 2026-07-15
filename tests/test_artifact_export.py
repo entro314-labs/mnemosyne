@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING
 
+import pytest
+
 from mnemosyne.artifact_export import (
     ArtifactWriteResult,
     slugify,
@@ -86,6 +88,22 @@ def test_slugify_truncates_to_max_len() -> None:
 
 
 # ---- write_session_artifacts ----
+
+
+def test_selected_artifact_read_failure_is_not_silently_reported(tmp_path: Path) -> None:
+    project = tmp_path / "-proj"
+    _make_session_tree(project)
+    artifacts = discover_session_artifacts(project, SESSION_ID)
+    artifacts.subagents[0].path.unlink()
+
+    with pytest.raises(OSError):
+        write_session_artifacts(
+            artifacts,
+            tmp_path / "out",
+            "session",
+            opts=RenderOptions(),
+            selection=ArtifactSelection(subagents=True),
+        )
 
 
 def test_write_session_artifacts_full(tmp_path: Path) -> None:

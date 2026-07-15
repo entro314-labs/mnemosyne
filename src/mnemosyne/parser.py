@@ -260,6 +260,10 @@ def summarize_session(path: Path) -> SessionSummary:
                 continue
             if t not in {"user", "assistant"}:
                 continue
+            if t == "user" and obj.get("isMeta"):
+                continue
+            if t == "assistant" and _is_filler_assistant(obj):
+                continue
             msg_count += 1
             ts = obj.get("timestamp")
             if ts:

@@ -23,6 +23,7 @@ from mnemosyne.parser import (
     _strip_reminder_wrappers,
     _unescape_if_encoded,
     iter_events,
+    summarize_session,
 )
 
 # ---- _unescape_if_encoded ----
@@ -305,6 +306,40 @@ def test_iter_events_skips_stop_sequence_filler(tmp_path: Path) -> None:
     events = list(iter_events(f))
     assert len(events) == 1
     assert events[0].uuid == "2"
+
+
+def test_summary_counts_only_messages_the_parser_keeps(tmp_path: Path) -> None:
+    f = tmp_path / "s.jsonl"
+    _write_jsonl(
+        f,
+        [
+            {
+                "type": "user",
+                "isMeta": True,
+                "timestamp": "2026-01-01T00:00:00Z",
+                "message": {"content": [{"type": "text", "text": "continue"}]},
+            },
+            {
+                "type": "assistant",
+                "timestamp": "2026-01-01T00:00:01Z",
+                "message": {
+                    "stop_reason": "stop_sequence",
+                    "content": [{"type": "text", "text": "API error"}],
+                },
+            },
+            {
+                "type": "user",
+                "timestamp": "2026-01-01T00:00:02Z",
+                "message": {"content": [{"type": "text", "text": "real prompt"}]},
+            },
+        ],
+    )
+    summary = summarize_session(f)
+    assert summary.message_count == 1
+    assert summary.user_count == 1
+    assert summary.assistant_count == 0
+    assert summary.first_user_text == "real prompt"
+    assert summary.first_timestamp == "2026-01-01T00:00:02Z"
 
 
 def test_iter_events_yields_attachment(tmp_path: Path) -> None:

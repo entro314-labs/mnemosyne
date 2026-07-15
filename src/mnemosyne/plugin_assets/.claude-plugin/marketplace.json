@@ -10,7 +10,7 @@
     {
       "name": "mnemosyne",
       "description": "Browse, search, and recall your Claude Code session history via slash commands and an MCP server.",
-      "version": "1.2.0",
+      "version": "1.5.0",
       "source": "./",
       "category": "productivity",
       "homepage": "https://github.com/entro314-labs/mnemosyne"

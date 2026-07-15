@@ -290,26 +290,23 @@ def summarize_journal(journal_path: Path) -> dict[str, Any]:
     """
     started = completed = 0
     agent_ids: set[str] = set()
-    try:
-        with journal_path.open(encoding="utf-8") as f:
-            for raw in f:
-                stripped = raw.strip()
-                if not stripped:
-                    continue
-                try:
-                    obj = json.loads(stripped)
-                except json.JSONDecodeError:
-                    continue
-                kind = obj.get("type")
-                if kind == "started":
-                    started += 1
-                elif kind == "result":
-                    completed += 1
-                agent_id = obj.get("agentId")
-                if agent_id:
-                    agent_ids.add(str(agent_id))
-    except OSError:
-        pass
+    with journal_path.open(encoding="utf-8") as f:
+        for raw in f:
+            stripped = raw.strip()
+            if not stripped:
+                continue
+            try:
+                obj = json.loads(stripped)
+            except json.JSONDecodeError:
+                continue
+            kind = obj.get("type")
+            if kind == "started":
+                started += 1
+            elif kind == "result":
+                completed += 1
+            agent_id = obj.get("agentId")
+            if agent_id:
+                agent_ids.add(str(agent_id))
     return {
         "workflow_id": _workflow_id_from(journal_path.parent.name) or journal_path.parent.name,
         "agents_started": started,

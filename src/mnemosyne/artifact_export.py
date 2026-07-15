@@ -151,10 +151,7 @@ def _write_summaries(out_dir: Path, base: str, summaries: list[Path]) -> int:
     """Copy session-memory handoff digests through, whitespace-normalised."""
     written = 0
     for i, src in enumerate(summaries):
-        try:
-            text = normalize_whitespace(src.read_text(encoding="utf-8")) + "\n"
-        except OSError:
-            continue
+        text = normalize_whitespace(src.read_text(encoding="utf-8")) + "\n"
         # The common case is a single summary.md → `<base>.summary.md`.
         name = f"{base}.summary.md" if len(summaries) == 1 else f"{base}.summary-{i + 1}.md"
         (out_dir / name).write_text(text, encoding="utf-8")
@@ -167,10 +164,7 @@ def _write_subagents(out_dir: Path, base: str, refs: list[SubagentRef], opts: Re
     used: set[str] = set()
     entries: list[dict[str, Any]] = []
     for ref in refs:
-        try:
-            body, entry, filename = _render_subagent(ref, opts)
-        except OSError:
-            continue
+        body, entry, filename = _render_subagent(ref, opts)
         # _write_unique may rename on collision; reflect the final name in the index.
         before = set(used)
         _write_unique(sub_dir, filename, body, used)
@@ -199,11 +193,8 @@ def _write_workflows(
     for script in artifacts.scripts:
         dest = wf_root / "scripts" / script.path.name
         dest.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            shutil.copyfile(script.path, dest)  # verbatim: it is source code
-            scripts += 1
-        except OSError:
-            continue
+        shutil.copyfile(script.path, dest)  # verbatim: it is source code
+        scripts += 1
 
     agents = 0
     for run in artifacts.workflow_runs:
@@ -211,10 +202,7 @@ def _write_workflows(
         used: set[str] = set()
         entries: list[dict[str, Any]] = []
         for ref in run.agents:
-            try:
-                body, entry, filename = _render_subagent(ref, opts)
-            except OSError:
-                continue
+            body, entry, filename = _render_subagent(ref, opts)
             before = set(used)
             _write_unique(run_dir, filename, body, used)
             entry["file"] = next(iter(used - before), filename)
@@ -241,8 +229,6 @@ def _write_tool_results(out_dir: Path, base: str, files: list[Path]) -> int:
             tr_dir.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(src, tr_dir / src.name)  # not text — copy raw bytes
             written += 1
-            continue
-        except OSError:
             continue
         tr_dir.mkdir(parents=True, exist_ok=True)
         (tr_dir / src.name).write_text(scrub_tool_output(raw) + "\n", encoding="utf-8")

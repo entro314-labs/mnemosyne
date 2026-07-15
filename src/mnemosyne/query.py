@@ -4,7 +4,7 @@ Both the MCP server (``syne mcp``) and the ``syne recall`` CLI need the same
 operations — recent-session headers, substring search over transcripts, and
 search over the curated memory layer. This module is the single canonical
 implementation so the two surfaces never drift; it depends only on the parser /
-renderer / memory / config primitives (NOT on FastMCP), so ``syne recall`` stays
+renderer / memory / config primitives (NOT on the MCP server), so ``syne recall`` stays
 light enough for a latency-sensitive SessionStart hook.
 """
 
@@ -61,6 +61,8 @@ def recent_sessions(
     settings: Settings,
 ) -> list[dict[str, Any]]:
     """Newest sessions in a project as cheap headers, most-recent first."""
+    if limit < 0:
+        raise ValueError("limit must be non-negative")
     entry = settings.projects.get(project_dir.name)
     summaries = sorted(
         (summarize_session(p) for p in list_session_files(project_dir)),
@@ -75,6 +77,7 @@ def memory_entries(project_dir: Path) -> list[dict[str, Any]]:
     return [
         {
             "name": m.name,
+            "project_slug": project_dir.name,
             "type": m.type,
             "description": m.description,
             "origin_session_id": m.origin_session_id,
@@ -115,6 +118,10 @@ def search_memories(
     max_results: int = 10,
 ) -> list[dict[str, Any]]:
     """Case-insensitive substring search across memory names/descriptions/bodies."""
+    if max_results < 0:
+        raise ValueError("max_results must be non-negative")
+    if max_results == 0:
+        return []
     needle = query.lower()
     if not needle.strip():
         return []
@@ -152,6 +159,12 @@ def search_sessions(
     interactive use, but callers wanting low latency on large archives should
     prefer :func:`recent_sessions` / :func:`memory_entries`.
     """
+    if max_results < 0:
+        raise ValueError("max_results must be non-negative")
+    if context_chars < 0:
+        raise ValueError("context_chars must be non-negative")
+    if max_results == 0:
+        return []
     needle = query.lower()
     if not needle.strip():
         return []
@@ -159,11 +172,8 @@ def search_sessions(
     hits: list[dict[str, Any]] = []
     for pd in project_dirs:
         entry = settings.projects.get(pd.name)
-        for jsonl in pd.glob("*.jsonl"):
-            try:
-                events = read_session(jsonl)
-            except OSError:
-                continue
+        for jsonl in sorted(pd.glob("*.jsonl")):
+            events = read_session(jsonl)
             text = render_markdown(events, opts=opts)
             idx = text.lower().find(needle)
             if idx < 0:
@@ -192,7 +202,7 @@ def all_project_dirs(claude_projects: Path) -> list[Path]:
     """Every ``~/.claude/projects/<slug>`` directory (slug dirs start with ``-``)."""
     if not claude_projects.is_dir():
         return []
-    return [d for d in claude_projects.iterdir() if d.is_dir() and d.name.startswith("-")]
+    return sorted(d for d in claude_projects.iterdir() if d.is_dir() and d.name.startswith("-"))
 
 
 def session_handoff(project_dir: Path, session_id: str) -> dict[str, Any]:
@@ -247,23 +257,31 @@ def self_align(
 
     suggested: list[dict[str, str]] = []
     if memories:
+        project = memories[0].get("project_slug") or dirs[0].name
         suggested.append(
             {
-                "call": f'get_memory("{memories[0]["name"]}")',
+                "call": f'get_memory("{memories[0]["name"]}", project="{project}")',
                 "why": "full body of the top memory match",
             }
         )
     if sessions:
+        project = sessions[0]["project_slug"]
         suggested.append(
             {
-                "call": f'get_session("{sessions[0]["session_id"][:8]}", mode="transcript")',
+                "call": (
+                    f'get_session("{sessions[0]["session_id"][:8]}", '
+                    f'project="{project}", mode="transcript")'
+                ),
                 "why": "implementation / debugging detail for the top hit",
             }
         )
     if recent:
+        project = recent[0].get("project_slug") or dirs[0].name
         suggested.append(
             {
-                "call": f'get_session_handoff("{recent[0]["session_id"][:8]}")',
+                "call": (
+                    f'get_session_handoff("{recent[0]["session_id"][:8]}", project="{project}")'
+                ),
                 "why": "where the most recent session left off",
             }
         )
@@ -292,7 +310,33 @@ def fit_packet(packet: dict[str, Any], max_chars: int) -> dict[str, Any]:
         return len(json.dumps(p, ensure_ascii=False))
 
     out = dict(packet)
+    out["memories"] = list(packet.get("memories", []))
+    out["recent_sessions"] = list(packet.get("recent_sessions", []))
+    out["session_hits"] = list(packet.get("session_hits", []))
+    out["suggested_next"] = list(packet.get("suggested_next", []))
+
+    def sync_suggestions() -> None:
+        allowed: set[str] = set()
+        if out["memories"]:
+            allowed.add("get_memory(")
+        if out["session_hits"]:
+            allowed.add("get_session(")
+        if out["recent_sessions"]:
+            allowed.add("get_session_handoff(")
+        out["suggested_next"] = [
+            suggestion
+            for suggestion in out["suggested_next"]
+            if any(suggestion.get("call", "").startswith(prefix) for prefix in allowed)
+        ]
+
     for key in ("session_hits", "recent_sessions", "memories"):
         while size(out) > max_chars and len(out.get(key, [])) > (1 if key == "memories" else 0):
             out[key] = out[key][:-1]
+            out["truncated"] = True
+            sync_suggestions()
+    if size(out) > max_chars:
+        raise ValueError(
+            f"max_chars={max_chars} is too small for the minimum self-alignment packet "
+            f"({size(out)} characters required)"
+        )
     return out

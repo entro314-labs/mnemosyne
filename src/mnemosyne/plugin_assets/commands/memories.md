@@ -13,9 +13,10 @@ Parse **$ARGUMENTS**:
   second argument as `project` if given; otherwise omit to use the current
   project). Report each memory as a short list: name, type
   (`user`/`feedback`/`project`/`reference`), and its one-line description.
-- **A query** → call `search_memories` with it (omit `project` to search ALL
-  projects, or pass the second argument to scope to one). Report the matching
-  memory names with their descriptions and project.
+- **A query** → call `search_memories` with it (omit `project` for the current
+  project, pass the second argument to scope to another one, or set
+  `all_projects=true` only when the user explicitly asks to search across
+  projects). Report the matching memory names with their descriptions and project.
 
 Then offer to load any specific memory in full via `get_memory(name)` — don't
 dump full bodies automatically. When you cite a memory, use its name so the user

@@ -8,8 +8,10 @@ a local marketplace so Claude Code's ``/plugin install`` flow can pick it up.
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import sys
+import tempfile
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from importlib import resources
@@ -57,20 +59,57 @@ def _copy_tree(src: Path, dst: Path) -> int:
     return count
 
 
+def _is_mnemosyne_install(path: Path) -> bool:
+    manifest = path / ".claude-plugin" / "plugin.json"
+    if not manifest.is_file():
+        return False
+    try:
+        data = json.loads(manifest.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return False
+    return isinstance(data, dict) and data.get("name") == "mnemosyne"
+
+
+def _load_marketplaces() -> dict:
+    if not KNOWN_MARKETPLACES.exists():
+        return {}
+    try:
+        data = json.loads(KNOWN_MARKETPLACES.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ValueError(
+            f"Refusing to overwrite malformed marketplace registry: {KNOWN_MARKETPLACES}"
+        ) from exc
+    if not isinstance(data, dict):
+        raise ValueError(
+            f"Refusing to overwrite non-object marketplace registry: {KNOWN_MARKETPLACES}"
+        )
+    return data
+
+
+def _write_marketplaces(data: dict) -> None:
+    KNOWN_MARKETPLACES.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=f".{KNOWN_MARKETPLACES.name}.", dir=KNOWN_MARKETPLACES.parent, text=True
+    )
+    tmp = KNOWN_MARKETPLACES.parent / Path(tmp_name).name
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(data, handle, indent=2)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        tmp.replace(KNOWN_MARKETPLACES)
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
 def _ensure_marketplace_registered(install_path: Path) -> bool:
     """Add the install dir to ~/.claude/plugins/known_marketplaces.json as a 'directory' source.
 
     Returns True if a write happened, False if it was already registered.
     """
     PLUGINS_DIR.mkdir(parents=True, exist_ok=True)
-    data: dict = {}
-    if KNOWN_MARKETPLACES.exists():
-        try:
-            data = json.loads(KNOWN_MARKETPLACES.read_text(encoding="utf-8"))
-        except json.JSONDecodeError:
-            data = {}
-    if not isinstance(data, dict):
-        data = {}
+    data = _load_marketplaces()
 
     existing = data.get(MARKETPLACE_KEY)
     expected_source = {"source": "directory", "path": str(install_path)}
@@ -87,8 +126,7 @@ def _ensure_marketplace_registered(install_path: Path) -> bool:
         "installLocation": expected_location,
         "lastUpdated": datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z"),
     }
-    KNOWN_MARKETPLACES.parent.mkdir(parents=True, exist_ok=True)
-    KNOWN_MARKETPLACES.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    _write_marketplaces(data)
     return True
 
 
@@ -104,7 +142,18 @@ def install_plugin(install_path: Path = DEFAULT_INSTALL_PATH) -> InstallResult:
             f"Plugin assets directory not found inside the package: {asset_root}"
         )
 
-    already_existed = (install_path / ".claude-plugin" / "plugin.json").exists()
+    # Validate the shared registry before changing the plugin tree, and never
+    # overlay an arbitrary non-empty directory supplied via --install-path.
+    _load_marketplaces()
+    if install_path.exists() and not install_path.is_dir():
+        raise ValueError(f"Refusing to overwrite non-directory path: {install_path}")
+    if (
+        install_path.exists()
+        and any(install_path.iterdir())
+        and not _is_mnemosyne_install(install_path)
+    ):
+        raise ValueError(f"Refusing to overwrite non-mnemosyne directory: {install_path}")
+    already_existed = _is_mnemosyne_install(install_path)
     install_path.mkdir(parents=True, exist_ok=True)
     files_written = _copy_tree(asset_root, install_path)
     marketplace_registered = _ensure_marketplace_registered(install_path)
@@ -122,20 +171,20 @@ def uninstall_plugin(install_path: Path = DEFAULT_INSTALL_PATH) -> bool:
 
     Returns True if anything was removed, False if nothing was there.
     """
+    data = _load_marketplaces()
     removed = False
+    if install_path.exists() and not install_path.is_dir():
+        raise ValueError(f"Refusing to remove non-directory path: {install_path}")
     if install_path.is_dir():
+        if not _is_mnemosyne_install(install_path):
+            raise ValueError(f"Refusing to remove non-mnemosyne directory: {install_path}")
         shutil.rmtree(install_path)
         removed = True
 
-    if KNOWN_MARKETPLACES.exists():
-        try:
-            data = json.loads(KNOWN_MARKETPLACES.read_text(encoding="utf-8"))
-        except json.JSONDecodeError:
-            data = {}
-        if isinstance(data, dict) and MARKETPLACE_KEY in data:
-            del data[MARKETPLACE_KEY]
-            KNOWN_MARKETPLACES.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
-            removed = True
+    if MARKETPLACE_KEY in data:
+        del data[MARKETPLACE_KEY]
+        _write_marketplaces(data)
+        removed = True
 
     return removed
 

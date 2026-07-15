@@ -37,8 +37,8 @@ classifiers = [
 # (pydantic-core, starlette, uvicorn, idna, …) resolve automatically — pinning
 # them here previously forced an unsatisfiable pydantic-core/pydantic conflict.
 dependencies = [
-    "cyclopts>=5.0.0a6",
-    "mcp>=1.27.2",
+    "cyclopts==5.0.0a7",
+    "mcp>=2.0.0a2",
     "rich>=15.0",
     "tomli-w>=1.2.0",
 ]
@@ -74,8 +74,8 @@ prerelease = "allow"
 
 [dependency-groups]
 dev = [
-    "pytest>=9.1.0",
-    "ruff>=0.15.17",
+    "pytest>=9.1.1",
+    "ruff>=0.15.20",
 ]
 
 [tool.ruff]

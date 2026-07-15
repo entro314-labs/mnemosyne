@@ -2,11 +2,19 @@
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
+import pytest
+
+from mnemosyne import cli
 from mnemosyne.cli import (
     _apply_filters,
     _filename_for,
+    _project_output_names,
     _resolve_filenames,
 )
+from mnemosyne.config import ProjectEntry
 from mnemosyne.parser import SessionSummary
 
 
@@ -79,6 +87,25 @@ def test_resolve_filenames_disambiguates_collisions() -> None:
     assert out["bbbbbbbb-foo"] == "same-title-bbbbbbbb.md"
 
 
+def test_resolve_filenames_extends_colliding_short_ids() -> None:
+    summaries = [
+        _summary(session_id="aaaaaaaa-1111", ai_title="same"),
+        _summary(session_id="aaaaaaaa-2222", ai_title="same"),
+    ]
+    out = _resolve_filenames(summaries)
+    assert out["aaaaaaaa-1111"] != out["aaaaaaaa-2222"]
+
+
+def test_cross_project_output_names_disambiguate_same_friendly_name() -> None:
+    entries = [
+        ProjectEntry(slug="-Users-a-api", friendly_name="api"),
+        ProjectEntry(slug="-Users-b-api", friendly_name="api"),
+    ]
+    names = _project_output_names(entries)
+    assert names[entries[0].slug] != names[entries[1].slug]
+    assert all(name.startswith("api-") for name in names.values())
+
+
 # ---- _apply_filters ----
 
 
@@ -100,6 +127,31 @@ def test_filter_until_keeps_only_older() -> None:
     assert [s.session_id for s in out] == ["a"]
 
 
+def test_filter_until_date_includes_the_whole_day() -> None:
+    sessions = [
+        _summary(session_id="a", last_timestamp="2026-05-01T23:59:59Z"),
+        _summary(session_id="b", last_timestamp="2026-05-02T00:00:00Z"),
+    ]
+    out = _apply_filters(sessions, since=None, until="2026-05-01", matching=None)
+    assert [s.session_id for s in out] == ["a"]
+
+
+def test_filter_compares_timezone_offsets_by_instant() -> None:
+    sessions = [_summary(session_id="a", last_timestamp="2026-05-01T01:00:00+02:00")]
+    out = _apply_filters(
+        sessions,
+        since="2026-04-30T23:30:00Z",
+        until=None,
+        matching=None,
+    )
+    assert out == []
+
+
+def test_filter_excludes_undated_sessions_from_date_range() -> None:
+    sessions = [_summary(session_id="a", last_timestamp=None)]
+    assert _apply_filters(sessions, since="2026-05-01", until=None, matching=None) == []
+
+
 def test_filter_matching_regex_on_title_and_first_prompt() -> None:
     sessions = [
         _summary(session_id="a", ai_title="Fix Godot bug"),
@@ -108,6 +160,12 @@ def test_filter_matching_regex_on_title_and_first_prompt() -> None:
     ]
     out = _apply_filters(sessions, since=None, until=None, matching=r"(?i)godot")
     assert {s.session_id for s in out} == {"a", "c"}
+
+
+def test_filter_matching_is_case_sensitive_unless_regex_opts_in() -> None:
+    sessions = [_summary(session_id="a", ai_title="Godot")]
+    assert _apply_filters(sessions, since=None, until=None, matching="godot") == []
+    assert _apply_filters(sessions, since=None, until=None, matching="(?i)godot") == sessions
 
 
 def test_filter_no_filters_returns_all() -> None:
@@ -123,3 +181,133 @@ def test_filters_combine_with_and() -> None:
     ]
     out = _apply_filters(sessions, since="2026-05-01", until=None, matching=r"(?i)godot")
     assert [s.session_id for s in out] == ["b"]
+
+
+def test_single_jsonl_export_keeps_project_path_and_avoids_title_collision(
+    tmp_path, monkeypatch
+) -> None:
+    project_dir = tmp_path / "-project"
+    project_dir.mkdir()
+    session_ids = ["aaaaaaaa-1111", "bbbbbbbb-2222"]
+    for session_id in session_ids:
+        records = [
+            {
+                "type": "user",
+                "uuid": f"u-{session_id}",
+                "timestamp": "2026-05-01T12:00:00Z",
+                "message": {"content": [{"type": "text", "text": "same prompt"}]},
+            },
+            {"type": "ai-title", "aiTitle": "Same title"},
+        ]
+        (project_dir / f"{session_id}.jsonl").write_text(
+            "\n".join(json.dumps(record) for record in records) + "\n",
+            encoding="utf-8",
+        )
+
+    local_path = str(tmp_path / "workspace")
+    settings = cli.Settings(
+        projects={
+            project_dir.name: ProjectEntry(
+                slug=project_dir.name,
+                local_path=local_path,
+                friendly_name="project",
+            )
+        }
+    )
+    monkeypatch.setattr(cli, "load_settings", lambda: settings)
+    monkeypatch.setattr(cli, "sync_registry", lambda value: value)
+    monkeypatch.setattr(cli, "save_settings", lambda value: None)
+
+    output = tmp_path / "out"
+    cli.export(session_ids[0], project_dir=project_dir, output=output, fmt="jsonl")
+
+    exported = output / "same-title-aaaaaaaa.jsonl"
+    assert exported.is_file()
+    turn = json.loads(exported.read_text(encoding="utf-8").splitlines()[0])
+    assert turn["project_path"] == local_path
+
+
+@pytest.mark.parametrize("include_summaries", [False, True])
+def test_interactive_preserves_summaries_flag(include_summaries, tmp_path, monkeypatch) -> None:
+    claude_root = tmp_path / "projects"
+    project_dir = claude_root / "-project"
+    project_dir.mkdir(parents=True)
+    session_id = "aaaaaaaa-1111"
+    (project_dir / f"{session_id}.jsonl").write_text(
+        json.dumps(
+            {
+                "type": "user",
+                "timestamp": "2026-05-01T12:00:00Z",
+                "message": {"content": [{"type": "text", "text": "prompt"}]},
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    entry = ProjectEntry(slug=project_dir.name, local_path=str(tmp_path), friendly_name="project")
+    settings = cli.Settings(projects={entry.slug: entry})
+    monkeypatch.setattr(cli, "CLAUDE_PROJECTS", claude_root)
+    monkeypatch.setattr(cli, "load_settings", lambda: settings)
+    monkeypatch.setattr(cli, "sync_registry", lambda value: value)
+    monkeypatch.setattr(cli, "save_settings", lambda value: None)
+    monkeypatch.setattr(cli, "_detect_cwd_project", lambda value: entry)
+    answers = iter(["all", str(tmp_path / "out")])
+    monkeypatch.setattr(cli.Prompt, "ask", lambda *args, **kwargs: next(answers))
+
+    observed: list[bool] = []
+
+    def fake_write_export(*args, selection, **kwargs):
+        observed.append(selection.summaries)
+        return Path(tmp_path / "out" / "session.md")
+
+    monkeypatch.setattr(cli, "_write_export", fake_write_export)
+    cli.interactive(summaries=include_summaries)
+    assert observed == [include_summaries]
+
+
+def test_all_projects_exports_project_memories_even_when_session_filter_is_empty(
+    tmp_path, monkeypatch
+) -> None:
+    claude_root = tmp_path / "projects"
+    project_dir = claude_root / "-project"
+    memory_dir = project_dir / "memory"
+    memory_dir.mkdir(parents=True)
+    (project_dir / "session.jsonl").write_text(
+        json.dumps(
+            {
+                "type": "user",
+                "timestamp": "2026-01-01T00:00:00Z",
+                "message": {"content": [{"type": "text", "text": "old session"}]},
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (memory_dir / "decision.md").write_text(
+        "---\nname: decision\n---\nkeep this\n", encoding="utf-8"
+    )
+    entry = ProjectEntry(slug=project_dir.name, local_path=str(tmp_path), friendly_name="project")
+    settings = cli.Settings(projects={entry.slug: entry})
+    monkeypatch.setattr(cli, "CLAUDE_PROJECTS", claude_root)
+
+    output = tmp_path / "archive"
+    cli._export_all_projects(
+        settings,
+        output=output,
+        fmt="markdown",
+        mode=None,
+        since="2027-01-01",
+        until=None,
+        matching=None,
+        include_thinking=None,
+        include_attachments=None,
+        include_reminders=None,
+        max_tool_chars=None,
+        sidecar=True,
+        index=True,
+        skip_empty=True,
+        selection=cli.ArtifactSelection(memories=True),
+    )
+
+    assert (output / "project" / "memory" / "decision.md").is_file()
+    assert not (output / "project" / "index.json").exists()

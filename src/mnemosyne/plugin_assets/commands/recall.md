@@ -7,8 +7,9 @@ You are being asked to recall prior work matching: **$ARGUMENTS**
 
 1. Call `search_sessions` from the `mnemosyne` MCP server with
    the query above. If the user supplied a second argument, pass it as the
-   `project` parameter; otherwise leave `project` unset to search ALL
-   projects.
+   `project` parameter; otherwise leave `project` unset to search the current
+   project. Set `all_projects=true` only if the user explicitly asks to search
+   across projects.
 2. Report the matches as a short list, each entry showing: the session
    title (with `session_id` prefix), the project name, the timestamp, and a
    trimmed snippet from the match.

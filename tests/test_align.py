@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from mnemosyne.align import (
     BEGIN,
     END,
@@ -69,6 +71,28 @@ def test_strip_restores_surrounding_content() -> None:
 
 def test_strip_noop_without_region() -> None:
     assert strip_region("# nothing here\n") == "# nothing here\n"
+
+
+@pytest.mark.parametrize(
+    "malformed",
+    [
+        f"# Mine\n\n{BEGIN}\nmissing end\n",
+        f"# Mine\n\n{END}\n",
+        f"{BEGIN}\nx\n{END}\n{BEGIN}\ny\n{END}\n",
+    ],
+)
+def test_malformed_regions_are_rejected_without_rewriting(malformed: str, tmp_path: Path) -> None:
+    f = tmp_path / "AGENTS.md"
+    f.write_text(malformed, encoding="utf-8")
+    with pytest.raises(ValueError, match="Malformed mnemosyne region"):
+        apply_to_file(f)
+    assert f.read_text(encoding="utf-8") == malformed
+
+
+def test_upsert_does_not_strip_user_whitespace() -> None:
+    original = "# Mine\n\nbody\n\n\n"
+    updated = upsert_region(original, render_block())
+    assert updated.startswith(original)
 
 
 # ---- apply_to_file ----

@@ -93,8 +93,28 @@ def test_recall_json_format(tmp_path: Path) -> None:
 
 def test_recall_hard_caps_output(tmp_path: Path) -> None:
     out = build_recall([_make_project(tmp_path)], Settings(), memories=True, max_chars=40)
-    assert len(out) <= 80  # cap + the truncation marker
-    assert "truncated" in out
+    assert len(out) <= 40
+
+
+def test_recall_json_remains_valid_when_capped(tmp_path: Path) -> None:
+    out = build_recall(
+        [_make_project(tmp_path)], Settings(), memories=True, max_chars=80, fmt="json"
+    )
+    parsed = json.loads(out)
+    assert parsed["kind"] == "memory_index"
+    assert parsed["truncated"] is True
+    assert len(out) <= 80
+
+
+def test_multi_project_memory_index_honors_global_limit(tmp_path: Path) -> None:
+    (tmp_path / "one").mkdir()
+    (tmp_path / "two").mkdir()
+    first = _make_project(tmp_path / "one")
+    second = _make_project(tmp_path / "two")
+    parsed = json.loads(
+        build_recall([first, second], Settings(), memories=True, limit=1, fmt="json")
+    )
+    assert len(parsed["items"]) == 1
 
 
 def test_bundle_markdown(tmp_path: Path) -> None:

@@ -145,7 +145,8 @@ def parse_memory(path: Path) -> Memory:
     """Parse one ``memory/<name>.md`` file into a :class:`Memory`."""
     text = path.read_text(encoding="utf-8")
     front, body = _parse_frontmatter(text)
-    metadata = front.get("metadata") if isinstance(front.get("metadata"), dict) else {}
+    raw_metadata = front.get("metadata")
+    metadata: dict[str, Any] = raw_metadata if isinstance(raw_metadata, dict) else {}
     name = str(front.get("name") or path.stem)
     description = front.get("description")
     body = normalize_whitespace(body)

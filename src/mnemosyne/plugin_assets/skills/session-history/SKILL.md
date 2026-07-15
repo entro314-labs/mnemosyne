@@ -23,13 +23,14 @@ workflow calls. The user's past work across all their projects is queryable.
   cheapest), `compact` (+ one-line tool summaries), `full` (verbatim).
 - `recall_recent(project?, limit=5)` — last N session summaries for the
   current project. Convenience for "what was I just working on?"
-- `search_sessions(query, project?, max_results=10, context_chars=200)` —
-  case-insensitive substring search across rendered transcripts. Omit
-  `project` to search ALL projects.
+- `search_sessions(query, project?, all_projects=false, max_results=10,
+  context_chars=200)` — case-insensitive substring search across rendered
+  transcripts. Omit `project` for the current project; set `all_projects=true`
+  only when the user explicitly asks for cross-project search.
 
 ### Start here — one bounded call
 
-- `self_align(query?, project?, max_chars=6000)` — **the preferred way to align
+- `self_align(query?, project?, all_projects=false, max_chars=6000)` — **the preferred way to align
   before working.** Returns one capped packet: curated-memory matches/index,
   recent-session summaries, transcript snippets (for a query), plus
   `suggested_next` calls and a `guidance` note. It carries NO full bodies or
@@ -45,8 +46,9 @@ workflow calls. The user's past work across all their projects is queryable.
   sessions. **Prefer these over transcript search for "what did we decide / what's
   the plan" questions; they're the distilled answer.**
 - `get_memory(name, project?)` — one memory's full body by name or unique prefix.
-- `search_memories(query, project?, max_results=10)` — substring search across
-  memory names/descriptions/bodies. Omit `project` to search ALL projects.
+- `search_memories(query, project?, all_projects=false, max_results=10)` —
+  substring search across memory names/descriptions/bodies. Omit `project` for
+  the current project; set `all_projects=true` only when explicitly requested.
 - `get_session_handoff(session_id, project?)` — a session's compaction handoff
   digest (Title / Current State / Task spec / Next steps). The right altitude for
   "continue where we left off" and far cheaper than the full transcript. Most
