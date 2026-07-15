@@ -5,6 +5,39 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.7.0] — 2026-07-15
+
+Policy hardening. The July intent-fidelity audit left five open product-policy
+questions; four are now decided and implemented, and the fifth (durability) is
+decided and documented. Every change makes an implicit behavior explicit.
+
+### Changed
+- **`syne align` requires project evidence.** The directive claims "this
+  project has a searchable archive," so it is now written only when that holds:
+  ≥1 session, exports on disk, or curated memories. A globally installed plugin
+  alone no longer suffices (it proves the tools exist, not that this project
+  has anything to recall). `--force` still pre-wires new projects.
+- **The plugin directory is fully managed.** `syne install` over an existing
+  install now deletes files that aren't part of the packaged asset set and
+  prunes emptied directories, so assets dropped by a release (renamed commands,
+  removed skills) can't coexist with their replacements. `InstallResult` gains
+  `files_removed`.
+- **`syne uninstall` reports orphaned directives.** After stripping the current
+  project's alignment region, it scans the registry for other projects whose
+  CLAUDE.md/AGENTS.md still carry one (malformed regions included) and prints
+  them with the removal command — nothing outside the cwd is touched.
+
+### Added
+- **Malformed-JSONL diagnostics.** Undecodable non-empty lines are now counted
+  (never hidden, still tolerated): `SessionSummary.malformed_lines`, the
+  `malformed_lines` field on MCP/recall session headers, the
+  `source_malformed_lines` sidecar field, a `syne list` warning line, and the
+  same accounting for Codex rollouts. One transient line is normal for an
+  actively-appended log; persistent counts flag real corruption.
+- **Documented durability contract** (README): multi-file operations are
+  fail-visible, not transactional — loud failures, partial outputs kept,
+  idempotent re-runs; single shared-state files stay atomic.
+
 ## [1.6.0] — 2026-07-15
 
 Cross-tool continuity and recall you can trust. Native per-tool memory is

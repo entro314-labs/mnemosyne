@@ -80,6 +80,10 @@ class SessionSummary:
     user_count: int
     assistant_count: int
     size_bytes: int
+    # Non-empty lines that failed to decode as JSON. A transient count of 1 is
+    # normal for an actively-appended log (a partially written final record); a
+    # persistent or growing count signals real source corruption.
+    malformed_lines: int = 0
 
 
 def _coerce_tool_result_content(raw: Any) -> str:
@@ -244,6 +248,7 @@ def summarize_session(path: Path) -> SessionSummary:
     user_count = 0
     assistant_count = 0
     msg_count = 0
+    malformed = 0
 
     with path.open(encoding="utf-8") as f:
         for raw in f:
@@ -253,6 +258,7 @@ def summarize_session(path: Path) -> SessionSummary:
             try:
                 obj = json.loads(stripped)
             except json.JSONDecodeError:
+                malformed += 1
                 continue
             t = obj.get("type")
             if t == "ai-title":
@@ -288,6 +294,7 @@ def summarize_session(path: Path) -> SessionSummary:
         user_count=user_count,
         assistant_count=assistant_count,
         size_bytes=path.stat().st_size,
+        malformed_lines=malformed,
     )
 
 

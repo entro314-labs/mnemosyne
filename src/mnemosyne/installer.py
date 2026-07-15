@@ -30,6 +30,7 @@ class InstallResult:
     files_written: int
     marketplace_registered: bool
     already_existed: bool
+    files_removed: int = 0  # stale assets deleted on update (the dir is fully managed)
 
 
 def _asset_root() -> Path:
@@ -43,9 +44,9 @@ def _asset_root() -> Path:
     return Path(str(resources.files("mnemosyne") / "plugin_assets"))
 
 
-def _copy_tree(src: Path, dst: Path) -> int:
-    """Copy `src` → `dst` recursively, overwriting. Returns count of files copied."""
-    count = 0
+def _copy_tree(src: Path, dst: Path) -> set[Path]:
+    """Copy `src` → `dst` recursively, overwriting. Returns the relative paths copied."""
+    copied: set[Path] = set()
     for entry in src.rglob("*"):
         if entry.is_dir():
             continue
@@ -55,8 +56,27 @@ def _copy_tree(src: Path, dst: Path) -> int:
         target = dst / rel
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(entry, target)
-        count += 1
-    return count
+        copied.add(rel)
+    return copied
+
+
+def _remove_stale_assets(install_path: Path, keep: set[Path]) -> int:
+    """Delete files under the plugin dir that aren't part of the current asset set.
+
+    The install directory is **fully managed**: a newer release owns its complete
+    contents, so files dropped by that release (renamed commands, removed skills)
+    must not linger and coexist with their replacements. Empty directories are
+    pruned afterwards. Only ever called after the mnemosyne-manifest guard passed.
+    """
+    removed = 0
+    for entry in sorted(install_path.rglob("*"), reverse=True):
+        rel = entry.relative_to(install_path)
+        if entry.is_file() and rel not in keep:
+            entry.unlink()
+            removed += 1
+        elif entry.is_dir() and not any(entry.iterdir()):
+            entry.rmdir()
+    return removed
 
 
 def _is_mnemosyne_install(path: Path) -> bool:
@@ -155,14 +175,16 @@ def install_plugin(install_path: Path = DEFAULT_INSTALL_PATH) -> InstallResult:
         raise ValueError(f"Refusing to overwrite non-mnemosyne directory: {install_path}")
     already_existed = _is_mnemosyne_install(install_path)
     install_path.mkdir(parents=True, exist_ok=True)
-    files_written = _copy_tree(asset_root, install_path)
+    copied = _copy_tree(asset_root, install_path)
+    files_removed = _remove_stale_assets(install_path, copied)
     marketplace_registered = _ensure_marketplace_registered(install_path)
 
     return InstallResult(
         install_path=install_path,
-        files_written=files_written,
+        files_written=len(copied),
         marketplace_registered=marketplace_registered,
         already_existed=already_existed,
+        files_removed=files_removed,
     )
 
 
@@ -198,6 +220,8 @@ def print_post_install_instructions(result: InstallResult, *, console) -> None:
     """Tell the user what to do next in Claude Code."""
     console.print(f"\n[bold green]✓ Plugin installed[/bold green] → {result.install_path}")
     console.print(f"  files written: {result.files_written}")
+    if result.files_removed:
+        console.print(f"  stale assets removed: {result.files_removed}")
     if result.marketplace_registered:
         console.print("  marketplace registered ([dim]known_marketplaces.json[/dim])")
     elif result.already_existed:

@@ -149,3 +149,24 @@ def test_install_preserves_malformed_marketplace_registry(tmp_path, monkeypatch)
         installer.install_plugin(install_path)
     assert known.read_text(encoding="utf-8") == "{broken"
     assert not install_path.exists()
+
+
+def test_update_removes_stale_assets(tmp_path, monkeypatch) -> None:
+    """The plugin dir is fully managed: files absent from the new release are deleted."""
+    install_path, _ = _patched_paths(tmp_path, monkeypatch)
+    first = installer.install_plugin(install_path)
+    assert first.files_removed == 0
+
+    stale_cmd = install_path / "commands" / "obsolete.md"
+    stale_cmd.write_text("old command\n", encoding="utf-8")
+    stale_dir = install_path / "skills" / "removed-skill"
+    stale_dir.mkdir(parents=True)
+    (stale_dir / "SKILL.md").write_text("old skill\n", encoding="utf-8")
+
+    second = installer.install_plugin(install_path)
+    assert second.files_removed == 2
+    assert not stale_cmd.exists()
+    assert not stale_dir.exists()  # emptied directories are pruned
+    # The real assets survive untouched.
+    assert (install_path / ".claude-plugin" / "plugin.json").is_file()
+    assert (install_path / "hooks" / "hooks.json").is_file()

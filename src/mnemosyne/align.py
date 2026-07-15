@@ -18,8 +18,13 @@ from __future__ import annotations
 import os
 import tempfile
 from pathlib import Path
+from typing import TYPE_CHECKING
 
+from mnemosyne.memory import iter_memory_files
 from mnemosyne.parser import project_dir_for_cwd
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
 
 BEGIN = "<!-- mnemosyne:begin (managed by `syne align`; edits inside are overwritten) -->"
 END = "<!-- mnemosyne:end -->"
@@ -165,21 +170,47 @@ def apply_to_file(path: Path, *, remove: bool = False) -> Outcome:
 
 
 def is_available(local_path: Path, *, claude_home: Path | None = None) -> bool:
-    """True when mnemosyne is actually usable for this project.
+    """True when THIS project actually has an archive to recall.
 
-    Avoids writing a directive that points at tools/CLI that aren't wired (the
-    'only if it already exists' gate): the plugin is installed, OR the project has
-    exports on disk, OR the cwd maps to a Claude Code project with ≥1 session.
+    The directive claims "this project has a searchable archive", so it is only
+    written when that claim holds: exports on disk, ≥1 session, or curated
+    memories. A globally installed plugin is deliberately NOT sufficient — it
+    proves the tools exist, not that this project has anything to recall
+    (``--force`` still overrides, e.g. to pre-wire a brand-new project).
     """
-    from pathlib import Path as _Path  # noqa: PLC0415 — only needed for the default
-
-    home = claude_home or (_Path.home() / ".claude")
-    if (home / "plugins" / "mnemosyne" / ".claude-plugin" / "plugin.json").is_file():
-        return True
+    home = claude_home or (Path.home() / ".claude")
     if (local_path / ".mnemosyne-exports").is_dir():
         return True
     slug_dir = project_dir_for_cwd(local_path, claude_home=home / "projects")
-    return slug_dir.is_dir() and any(slug_dir.glob("*.jsonl"))
+    if slug_dir.is_dir() and any(slug_dir.glob("*.jsonl")):
+        return True
+    return any(iter_memory_files(slug_dir))
+
+
+def files_with_region(roots: Iterable[Path]) -> list[Path]:
+    """Instruction files under ``roots`` that still carry a managed region.
+
+    Used by uninstall to report projects whose directives would otherwise be
+    orphaned. A *malformed* region counts — it needs ``syne align --remove``
+    (or manual cleanup) just as much as a healthy one. Unreadable files are
+    skipped: reporting is best-effort, never a reason to fail an uninstall.
+    """
+    found: list[Path] = []
+    for root in roots:
+        for f in target_files(root):
+            if not f.is_file():
+                continue
+            try:
+                text = f.read_text(encoding="utf-8")
+            except OSError:
+                continue
+            try:
+                present = has_region(text)
+            except ValueError:
+                present = True
+            if present:
+                found.append(f)
+    return found
 
 
 def target_files(local_path: Path, *, claude: bool = True, agents: bool = True) -> list[Path]:

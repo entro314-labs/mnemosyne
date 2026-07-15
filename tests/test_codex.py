@@ -264,3 +264,11 @@ def test_codex_memory_summary_caps(codex_home: Path, tmp_path: Path) -> None:
 def test_first_user_text_unwraps_ide_marker() -> None:
     assert codex_first_user_text("## My request for Codex:\n  do it  ") == "do it"
     assert codex_first_user_text("plain prompt") == "plain prompt"
+
+
+def test_summarize_codex_counts_malformed_lines(codex_home: Path) -> None:
+    path = resolve_codex_session(SID, codex_home)
+    with path.open("a", encoding="utf-8") as f:
+        f.write("{broken record\n")
+    s = summarize_codex_session(path)
+    assert s.malformed_lines == 1

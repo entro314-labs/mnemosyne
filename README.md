@@ -58,8 +58,17 @@ mnemosyne@mnemosyne`. The CLI works fine without
 step 2; step 2 is only needed if you want `/recall`, `/history`, `/summon`,
 `/export` slash commands inside Claude Code.
 
-Update later: `uv tool upgrade mnemosyne-cc && syne install`.
-Uninstall: `syne uninstall && uv tool uninstall mnemosyne-cc`.
+Update later: `uv tool upgrade mnemosyne-cc && syne install`. The plugin
+directory is **fully managed**: updates overwrite the packaged assets *and
+delete files that are no longer part of the release* (renamed commands, removed
+skills), so old and new definitions never coexist. Don't keep personal files
+inside `~/.claude/plugins/mnemosyne/`.
+
+Uninstall: `syne uninstall && uv tool uninstall mnemosyne-cc`. Uninstall strips
+the self-alignment region from the **current** project's instruction files and
+prints any *other* registered projects that still carry one (each removable
+with `syne align <project-root> --remove`) — nothing outside the cwd is
+modified silently.
 
 ## The three layers
 
@@ -281,10 +290,12 @@ syne align --remove        # strip it again (idempotent, marker-scoped)
 - **Idempotent + marker-scoped.** Only the
   `<!-- mnemosyne:begin -->`…`<!-- mnemosyne:end -->` span is ever touched;
   re-running is a no-op; your own content is never clobbered.
-- **Gated on availability.** The directive is written only when mnemosyne is
-  actually wired for the project (plugin installed, exports on disk, or a Claude
-  session history) — never a directive pointing at tools that aren't there.
-  `--force` overrides.
+- **Gated on real evidence.** The directive claims "this project has a
+  searchable archive", so it is written only when that's true: the project has
+  ≥1 session, exports on disk, or curated memories. A globally installed plugin
+  alone is deliberately *not* sufficient — it proves the tools exist, not that
+  this project has anything to recall. `--force` overrides (e.g. to pre-wire a
+  brand-new project).
 
 The directive is **engineered to reduce drift**, not feed it: don't auto-load
 every session; cheapest-first with hard stops (≤1–3 sessions, never `full` mode);
@@ -366,6 +377,23 @@ export from a project. Claude Code's slug encoding (`/` → `-`) is lossy
 (`My-Projects` and `My/Projects` collide), so `syne` resolves the real local
 path by reading the `cwd` field stored inside each session record —
 authoritative, not heuristic.
+
+## Durability contract
+
+Multi-file operations (export bundles, merges, plugin installs) are
+**fail-visible, not transactional**: each file is written independently, an
+error anywhere aborts loudly, and files completed before the failure are left
+on disk for inspection — nothing is rolled back. Re-running the same command is
+idempotent (same inputs → same filenames → same content), so recovery is always
+"fix the cause, run it again." The few single files where a torn write would
+corrupt shared state (`known_marketplaces.json`, instruction files managed by
+`syne align`) are written atomically via temp-file-and-rename.
+
+Malformed JSONL lines in a source session are tolerated (Claude Code appends
+live, so a partially written final record is normal) but **counted, never
+hidden**: `syne list` flags sessions with undecodable lines, and every session
+header (`malformed_lines`) and export sidecar (`source_malformed_lines`)
+carries the count. A persistent or growing count means real source corruption.
 
 ## Storage architecture
 

@@ -17,7 +17,13 @@ from rich.table import Table
 
 from mnemosyne import __version__
 from mnemosyne import codex as codex_store
-from mnemosyne.align import apply_to_file, is_available, render_block, target_files
+from mnemosyne.align import (
+    apply_to_file,
+    files_with_region,
+    is_available,
+    render_block,
+    target_files,
+)
 from mnemosyne.artifact_export import (
     ArtifactWriteResult,
     slugify,
@@ -408,6 +414,7 @@ def _write_session_sidecar(
         "assistant_count": s.assistant_count,
         "source_jsonl": str(s.path),
         "source_size_bytes": s.size_bytes,
+        "source_malformed_lines": s.malformed_lines,
         "rendered_file": output_file.name,
         "rendered_size_bytes": output_file.stat().st_size,
         "mode": opts.mode,
@@ -723,6 +730,14 @@ def list_cmd(
         )
     console.print(table)
     console.print(f"\n[dim]{len(summaries)} sessions[/dim]")
+    bad = [(s.session_id[:8], s.malformed_lines) for s in summaries if s.malformed_lines]
+    if bad:
+        detail = ", ".join(f"{sid} ({n})" for sid, n in bad)
+        console.print(
+            f"[yellow]⚠ undecodable JSONL lines:[/yellow] {detail}  "
+            "[dim](1 transient line is normal for an active session; "
+            "persistent counts suggest source corruption)[/dim]"
+        )
 
 
 @app.command
@@ -1593,9 +1608,10 @@ def align(
 
     if not remove and not force and not is_available(local):
         err_console.print(
-            f"mnemosyne not detected for {local}\n"
-            "  (no plugin installed, no .mnemosyne-exports/, no sessions on disk).\n"
-            "  run an export, install the plugin, or pass --force."
+            f"no archive to align against for {local}\n"
+            "  (no sessions, no .mnemosyne-exports/, no curated memories for this project).\n"
+            "  the directive would claim an archive that doesn't exist — run a session or\n"
+            "  an export first, or pass --force to pre-wire a new project."
         )
         return
 
@@ -1782,11 +1798,31 @@ def uninstall(
     else:
         console.print(f"[dim](nothing to remove at {target})[/dim]")
 
-    # Best-effort: strip the self-alignment region from THIS project's instruction
-    # files (we can only reach the cwd; other aligned projects need `syne align --remove`).
+    # Strip the self-alignment region from THIS project's instruction files, then
+    # report (never touch) other registered projects that still carry one — a
+    # directive pointing at a CLI that may be about to disappear shouldn't be
+    # silently orphaned.
     for f in target_files(Path.cwd()):
         if apply_to_file(f, remove=True) == "removed":
             console.print(f"[green]✓ removed align region[/green] {f}")
+
+    settings = load_settings()
+    cwd = Path.cwd().resolve()
+    other_roots = sorted(
+        {
+            Path(entry.local_path)
+            for entry in settings.projects.values()
+            if entry.local_path
+            and Path(entry.local_path).is_dir()
+            and Path(entry.local_path).resolve() != cwd
+        }
+    )
+    remaining = files_with_region(other_roots)
+    if remaining:
+        console.print("\n[yellow]Managed alignment regions remain in other projects:[/yellow]")
+        for f in remaining:
+            console.print(f"  {f}")
+        console.print("[dim]Remove each with:[/dim] syne align <project-root> --remove")
 
 
 @app.command

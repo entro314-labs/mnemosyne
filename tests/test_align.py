@@ -10,6 +10,7 @@ from mnemosyne.align import (
     BEGIN,
     END,
     apply_to_file,
+    files_with_region,
     has_region,
     is_available,
     render_block,
@@ -161,14 +162,61 @@ def test_gate_true_via_sessions(tmp_path: Path) -> None:
     assert is_available(local, claude_home=home) is True
 
 
-def test_gate_true_via_installed_plugin(tmp_path: Path) -> None:
+def test_gate_false_when_only_plugin_installed(tmp_path: Path) -> None:
+    """A global plugin proves the tools exist, not that THIS project has an archive."""
     local = tmp_path / "proj"
     local.mkdir()
     home = tmp_path / "claude"
     plugin = home / "plugins" / "mnemosyne" / ".claude-plugin"
     plugin.mkdir(parents=True)
     (plugin / "plugin.json").write_text("{}", encoding="utf-8")
+    (home / "projects").mkdir(parents=True)
+    assert is_available(local, claude_home=home) is False
+
+
+def test_gate_true_via_curated_memories(tmp_path: Path) -> None:
+    local = tmp_path / "proj"
+    local.mkdir()
+    home = tmp_path / "claude"
+    slug = str(local.resolve()).replace("/", "-")
+    memory_dir = home / "projects" / slug / "memory"
+    memory_dir.mkdir(parents=True)
+    (memory_dir / "a-fact.md").write_text("---\nname: a-fact\n---\nBody.\n", encoding="utf-8")
     assert is_available(local, claude_home=home) is True
+
+
+def test_gate_ignores_memory_index_alone(tmp_path: Path) -> None:
+    """MEMORY.md is the index, not a memory — alone it isn't archive evidence."""
+    local = tmp_path / "proj"
+    local.mkdir()
+    home = tmp_path / "claude"
+    slug = str(local.resolve()).replace("/", "-")
+    memory_dir = home / "projects" / slug / "memory"
+    memory_dir.mkdir(parents=True)
+    (memory_dir / "MEMORY.md").write_text("- index\n", encoding="utf-8")
+    assert is_available(local, claude_home=home) is False
+
+
+# ---- files_with_region ----
+
+
+def test_files_with_region_reports_healthy_and_malformed(tmp_path: Path) -> None:
+    aligned = tmp_path / "aligned"
+    aligned.mkdir()
+    (aligned / "CLAUDE.md").write_text(render_block(), encoding="utf-8")
+
+    malformed = tmp_path / "malformed"
+    malformed.mkdir()
+    (malformed / "AGENTS.md").write_text(f"{BEGIN}\norphan without end\n", encoding="utf-8")
+
+    clean = tmp_path / "clean"
+    clean.mkdir()
+    (clean / "CLAUDE.md").write_text("# no region\n", encoding="utf-8")
+
+    missing = tmp_path / "missing"  # no instruction files at all
+
+    found = files_with_region([aligned, malformed, clean, missing])
+    assert [f.parent.name for f in found] == ["aligned", "malformed"]
 
 
 def test_apply_to_both_targets(tmp_path: Path) -> None:

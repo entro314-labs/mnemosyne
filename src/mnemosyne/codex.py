@@ -52,7 +52,7 @@ from mnemosyne.parser import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Callable, Iterator
 
 CODEX_HOME = Path.home() / ".codex"
 
@@ -100,7 +100,10 @@ class CodexRolloutSummary:
     title: str | None  # first `# ` heading in the body
 
 
-def _read_json_lines(path: Path) -> Iterator[dict[str, Any]]:
+def _read_json_lines(
+    path: Path,
+    on_malformed: Callable[[], None] | None = None,
+) -> Iterator[dict[str, Any]]:
     with path.open(encoding="utf-8") as f:
         for raw in f:
             stripped = raw.strip()
@@ -109,6 +112,8 @@ def _read_json_lines(path: Path) -> Iterator[dict[str, Any]]:
             try:
                 obj = json.loads(stripped)
             except json.JSONDecodeError:
+                if on_malformed is not None:
+                    on_malformed()
                 continue
             if isinstance(obj, dict):
                 yield obj
@@ -383,8 +388,13 @@ def summarize_codex_session(
     first_ts: str | None = None
     last_ts: str | None = None
     user_count = assistant_count = 0
+    malformed = 0
 
-    for obj in _read_json_lines(path):
+    def count_malformed() -> None:
+        nonlocal malformed
+        malformed += 1
+
+    for obj in _read_json_lines(path, on_malformed=count_malformed):
         payload = obj.get("payload")
         if not isinstance(payload, dict):
             continue
@@ -426,6 +436,7 @@ def summarize_codex_session(
         user_count=user_count,
         assistant_count=assistant_count,
         size_bytes=path.stat().st_size,
+        malformed_lines=malformed,
     )
 
 

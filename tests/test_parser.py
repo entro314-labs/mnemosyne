@@ -384,3 +384,20 @@ def test_iter_events_skips_malformed_lines(tmp_path: Path, bad_line: str) -> Non
     f = tmp_path / "s.jsonl"
     f.write_text(bad_line + "\n", encoding="utf-8")
     assert list(iter_events(f)) == []
+
+
+def test_summarize_counts_malformed_lines(tmp_path: Path) -> None:
+    good = json.dumps(
+        {
+            "type": "user",
+            "uuid": "u1",
+            "parentUuid": None,
+            "timestamp": "2026-01-01T00:00:00Z",
+            "message": {"role": "user", "content": [{"type": "text", "text": "hello"}]},
+        }
+    )
+    f = tmp_path / "s.jsonl"
+    f.write_text(f"{good}\n{{not json\ntruncated-final-rec", encoding="utf-8")
+    s = summarize_session(f)
+    assert s.user_count == 1
+    assert s.malformed_lines == 2

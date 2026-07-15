@@ -53,6 +53,7 @@ def session_summary_dict(s: SessionSummary, entry: ProjectEntry | None = None) -
         "user_count": s.user_count,
         "assistant_count": s.assistant_count,
         "size_bytes": s.size_bytes,
+        "malformed_lines": s.malformed_lines,
         "project_slug": entry.slug if entry else None,
         "project_path": entry.local_path if entry else None,
     }
