@@ -16,6 +16,7 @@ from rich.prompt import IntPrompt, Prompt
 from rich.table import Table
 
 from mnemosyne import __version__
+from mnemosyne import codex as codex_store
 from mnemosyne.align import apply_to_file, is_available, render_block, target_files
 from mnemosyne.artifact_export import (
     ArtifactWriteResult,
@@ -35,6 +36,7 @@ from mnemosyne.config import (
     save_settings,
     sync_registry,
 )
+from mnemosyne.drift import check_drift, render_drift_markdown
 from mnemosyne.formats import Format, render_jsonl, render_plain
 from mnemosyne.memory import collect_memories
 from mnemosyne.parser import (
@@ -634,11 +636,11 @@ def interactive(
         return
 
     _render_session_table(session_summaries)
-    selection = Prompt.ask(
+    picked = Prompt.ask(
         "Sessions to export (e.g. '1', '1,3-5', or 'all')",
         default="all",
     )
-    targets = [session_summaries[i] for i in _parse_selection(selection, len(session_summaries))]
+    targets = [session_summaries[i] for i in _parse_selection(picked, len(session_summaries))]
     if not targets:
         err_console.print("No sessions selected.")
         return
@@ -1489,6 +1491,13 @@ def recall(
     fmt: Annotated[
         RecallFormat, Parameter(name=["--format", "-f"], help="markdown (default) or json.")
     ] = "markdown",
+    codex: Annotated[
+        bool,
+        Parameter(
+            name=["--codex"],
+            help="Include Codex CLI rollouts/handoffs in --bundle (on by default).",
+        ),
+    ] = True,
 ) -> None:
     """Print a small, capped recall (recent sessions / memories / search) to stdout.
 
@@ -1507,7 +1516,16 @@ def recall(
             return
         dirs = [pd]
     if bundle:
-        print(build_bundle(dirs, settings, query_str=query, max_chars=max_chars, fmt=fmt))
+        print(
+            build_bundle(
+                dirs,
+                settings,
+                query_str=query,
+                max_chars=max_chars,
+                fmt=fmt,
+                include_codex=codex,
+            )
+        )
         return
     print(
         build_recall(
@@ -1592,6 +1610,119 @@ def align(
         outcome = apply_to_file(f, remove=remove)
         style, label = labels[outcome]
         console.print(f"[{style}]{label}[/{style}] {f}")
+
+
+@app.command
+def drift(
+    path: Annotated[
+        Path | None,
+        Parameter(help="Project working tree to verify against (default: cwd)."),
+    ] = None,
+    /,
+    fmt: Annotated[
+        RecallFormat, Parameter(name=["--format", "-f"], help="markdown (default) or json.")
+    ] = "markdown",
+) -> None:
+    """Mechanically verify curated memories against the live repository.
+
+    Checks every memory's cited file paths, `path:line` anchors, and `[[links]]`
+    against the working tree. Deterministic: a finding means the memory's claims
+    no longer hold and it is stale until re-verified. The computed counterpart of
+    the directive's "treat recall as dated evidence" rule.
+    """
+    root = (path or Path.cwd()).resolve()
+    project_dir = project_dir_for_cwd(root)
+    if not project_dir.is_dir():
+        raise SystemExit(f"error: no Claude Code project archive for {root} ({project_dir})")
+    report = check_drift(project_dir, root)
+    if fmt == "json":
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return
+    # markup=False: memory links are [[name]], which rich would eat as style tags.
+    console.print(render_drift_markdown(report), markup=False)
+
+
+@app.command(name="codex-list")
+def codex_list(
+    cwd: Annotated[
+        Path | None,
+        Parameter(name=["--cwd"], help="Working tree to filter by (default: current dir)."),
+    ] = None,
+    all_sessions: Annotated[
+        bool,
+        Parameter(name=["--all"], help="List every Codex rollout regardless of project."),
+    ] = False,
+    limit: Annotated[int, Parameter(help="Max rollouts to show.")] = 20,
+) -> None:
+    """List OpenAI Codex CLI sessions (rollouts) recorded for this project.
+
+    Reads `~/.codex/sessions` first-line headers plus the thread-name index —
+    cheap even on large archives. Use `syne codex-export` to render one.
+    """
+    if not codex_store.codex_available():
+        err_console.print(f"No Codex archive found at {codex_store.CODEX_HOME}")
+        return
+    target = None if all_sessions else (cwd or Path.cwd())
+    metas = codex_store.codex_sessions_for(target, limit=limit)
+    if not metas:
+        err_console.print("No Codex sessions match.")
+        return
+    table = Table(title="Codex sessions", header_style="bold")
+    table.add_column("ID", style="cyan", no_wrap=True)
+    table.add_column("Started", no_wrap=True)
+    table.add_column("Title / thread")
+    if all_sessions:
+        table.add_column("cwd", style="dim")
+    for m in metas:
+        row = [m.session_id[:8], _fmt_short_ts(m.timestamp), _short(m.thread_name, 70)]
+        if all_sessions:
+            row.append(_short(m.cwd, 50))
+        table.add_row(*row)
+    console.print(table)
+    console.print(f"\n[dim]{len(metas)} rollouts · archive: {codex_store.CODEX_HOME}[/dim]")
+
+
+@app.command(name="codex-export")
+def codex_export(
+    session_id: str,
+    /,
+    output: Annotated[
+        Path | None,
+        Parameter(name=["--output", "-o"], help="Output file or directory."),
+    ] = None,
+    fmt: Annotated[
+        Format,
+        Parameter(name=["--format", "-f"], help="markdown (default), jsonl, or plain."),
+    ] = "markdown",
+    mode: Annotated[
+        Mode | None,
+        Parameter(help="transcript (default), compact, or full."),
+    ] = None,
+    max_tool_chars: int | None = None,
+) -> None:
+    """Export one Codex rollout (by session UUID or unique prefix) to disk.
+
+    Renders through the same pipeline as Claude sessions, so modes, formats, and
+    noise scrubbing behave identically.
+    """
+    settings = load_settings()
+    try:
+        path = codex_store.resolve_codex_session(session_id)
+    except (FileNotFoundError, ValueError) as exc:
+        raise SystemExit(f"error: {exc}") from exc
+    summary = codex_store.summarize_codex_session(path, codex_store.load_session_index())
+    events = codex_store.read_codex_session(path)
+    opts = _opts_from_settings(settings, mode=mode, max_tool_chars=max_tool_chars)
+    rendered = _render_for_format(summary, events, opts, fmt=fmt, project_slug="codex")
+
+    if output is not None and (output.suffix and not output.is_dir()):
+        out_path = output
+    else:
+        out_dir = output or (resolve_output_dir(settings.defaults.output_dir, entry=None) / "codex")
+        out_path = out_dir / _filename_for(summary, fmt=fmt)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(rendered, encoding="utf-8")
+    console.print(f"✓ Wrote [green]{out_path}[/green]")
 
 
 @app.command

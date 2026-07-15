@@ -41,6 +41,8 @@ if TYPE_CHECKING:
 
 # A wiki-style link to a sibling memory: [[some-other-memory-name]].
 _LINK_RE = re.compile(r"\[\[([^\]]+)\]\]")
+# Inline code spans — a [[link]] inside backticks is syntax documentation, not a reference.
+_CODE_SPAN_RE = re.compile(r"`[^`\n]*`")
 # Recognised memory categories (mirrors Claude Code's own taxonomy).
 MEMORY_TYPES = ("user", "feedback", "project", "reference")
 
@@ -134,9 +136,13 @@ def _parse_frontmatter(text: str) -> tuple[dict[str, Any], str]:
 
 
 def _extract_links(body: str) -> list[str]:
-    """Return the de-duplicated ``[[name]]`` references in document order."""
+    """Return the de-duplicated ``[[name]]`` references in document order.
+
+    Code spans are stripped first: a ``[[link]]`` inside backticks documents the
+    syntax rather than referencing a memory.
+    """
     seen: dict[str, None] = {}
-    for m in _LINK_RE.finditer(body):
+    for m in _LINK_RE.finditer(_CODE_SPAN_RE.sub("", body)):
         seen.setdefault(m.group(1).strip(), None)
     return list(seen)
 

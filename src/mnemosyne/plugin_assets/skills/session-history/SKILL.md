@@ -32,11 +32,12 @@ workflow calls. The user's past work across all their projects is queryable.
 
 - `self_align(query?, project?, all_projects=false, max_chars=6000)` — **the preferred way to align
   before working.** Returns one capped packet: curated-memory matches/index,
-  recent-session summaries, transcript snippets (for a query), plus
+  recent-session summaries, transcript snippets (for a query), this project's
+  Codex CLI rollouts + handoffs (when a Codex archive exists), plus
   `suggested_next` calls and a `guidance` note. It carries NO full bodies or
   transcripts — pull those only via the suggested `get_memory` / `get_session` /
-  `get_session_handoff` calls, and only if the task needs that detail. Use this
-  instead of composing the lower-level tools by hand.
+  `get_session_handoff` / `get_codex_handoff` calls, and only if the task needs
+  that detail. Use this instead of composing the lower-level tools by hand.
 
 ### Memory tools — curated knowledge, denser than transcripts
 
@@ -53,6 +54,28 @@ workflow calls. The user's past work across all their projects is queryable.
   digest (Title / Current State / Task spec / Next steps). The right altitude for
   "continue where we left off" and far cheaper than the full transcript. Most
   sessions have none (`has_handoff: false`); written only on compaction.
+
+### Cross-tool (Codex CLI) — work done on this project in another agent
+
+The user also works in OpenAI Codex CLI; its archive (`~/.codex`) records
+sessions for the *same* projects. Don't treat Codex work as invisible.
+
+- `list_codex_sessions(project?, limit=10)` — Codex rollouts for this working
+  tree (id, thread title, timestamp). Cheap headers only.
+- `get_codex_session(session_id, mode="transcript")` — one rollout rendered like
+  any session.
+- `list_codex_handoffs(project?)` / `get_codex_handoff(name)` — Codex's own
+  per-session digests (what happened, how it concluded). The right altitude for
+  "what did Codex do here".
+- `get_codex_memory(max_chars=4000)` — Codex's consolidated, model-written
+  user/working-preferences profile. Trust below curated memories.
+
+### Drift — verify before trusting
+
+- `check_drift(project?)` — mechanically verifies every curated memory's cited
+  file paths, `path:line` anchors, and `[[links]]` against the live repository.
+  Run it when recalled memories will drive a decision; a finding means that
+  memory is stale until re-verified. Deterministic — no guessing involved.
 
 ### Subagent tools — the work hidden behind Task/workflow calls
 
@@ -77,6 +100,8 @@ workflow calls. The user's past work across all their projects is queryable.
 | "How did that audit/workflow reach its finding?" | `list_subagents()` → `get_subagent()` |
 | Browsing / triage / "show me last 20" | `list_sessions(limit=20)` |
 | "What projects do I have?" | `list_projects()` |
+| "What did I do in Codex / the other tool?" | `list_codex_handoffs()` → `get_codex_handoff()` |
+| A recalled memory is about to drive a decision | `check_drift()` |
 
 ## Workflow
 

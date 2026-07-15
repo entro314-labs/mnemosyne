@@ -5,12 +5,16 @@ discovery primitives as the CLI — this module is a thin wrapper.
 
 Tools:
 
-- ``list_projects`` — every project with at least one session
-- ``list_sessions`` — sessions in a project (slug or local path)
-- ``get_session_summary`` — cheap header for a session (no full transcript)
-- ``get_session`` — rendered markdown for a session in chosen mode
-- ``recall_recent`` — last N session summaries for the current project
-- ``search_sessions`` — substring search across rendered transcripts
+- ``self_align`` — one bounded packet: memories + recent + hits + Codex context
+- ``list_projects`` / ``list_sessions`` / ``get_session_summary`` / ``get_session``
+- ``recall_recent`` / ``search_sessions`` — recency + substring search
+- ``list_memories`` / ``get_memory`` / ``search_memories`` — curated memory layer
+- ``get_session_handoff`` — compaction handoff digest
+- ``list_subagents`` / ``get_subagent`` — hidden Task/workflow transcripts
+- ``list_codex_sessions`` / ``get_codex_session`` — Codex CLI rollouts (cross-tool)
+- ``list_codex_handoffs`` / ``get_codex_handoff`` / ``get_codex_memory`` — Codex's
+  own summaries + model-written memory
+- ``check_drift`` — verify memories' file/line/link claims against the live repo
 """
 
 from __future__ import annotations
@@ -19,7 +23,10 @@ from pathlib import Path
 from typing import Any
 
 from mcp.server import MCPServer
+from mcp.types import ToolAnnotations
 
+from mnemosyne import codex as codex_store
+from mnemosyne import drift as drift_check
 from mnemosyne.artifacts import SubagentRef, discover_session_artifacts
 from mnemosyne.config import (
     CLAUDE_PROJECTS,
@@ -36,6 +43,7 @@ from mnemosyne.parser import (
 from mnemosyne.query import (
     all_project_dirs,
     fit_packet,
+    local_paths_for,
     memory_detail,
     memory_entries,
     recent_sessions,
@@ -48,6 +56,10 @@ from mnemosyne.query import self_align as _query_self_align
 from mnemosyne.render import Mode, RenderOptions, render_markdown
 
 mcp = MCPServer("mnemosyne")
+
+# Every mnemosyne tool only reads local archives — never writes, never leaves the
+# machine. Declaring that lets hosts auto-approve the calls instead of prompting.
+_READ_ONLY = ToolAnnotations(read_only_hint=True, destructive_hint=False, open_world_hint=False)
 
 
 # ---- helpers ----
@@ -89,6 +101,21 @@ def _resolve_project_scope(project: str | None, *, all_projects: bool) -> list[P
     return [_resolve_project(project)]
 
 
+def _resolve_local_path(project: str | None) -> Path:
+    """A project's *working tree* (Codex archives key on cwd, not Claude slugs)."""
+    if project is None:
+        return Path.cwd()
+    p = Path(project)
+    if p.is_absolute() and p.is_dir():
+        return p
+    locals_ = local_paths_for([_resolve_project(project)], load_settings())
+    if not locals_:
+        raise FileNotFoundError(
+            f"No local working tree recorded for {project!r}; pass an absolute path."
+        )
+    return locals_[0]
+
+
 def _resolve_session_path(project_dir: Path, session_id: str) -> Path:
     matches = [p for p in list_session_files(project_dir) if p.stem.startswith(session_id)]
     if not matches:
@@ -115,7 +142,7 @@ def _project_dict(entry: ProjectEntry, n_sessions: int) -> dict[str, Any]:
 # ---- tools ----
 
 
-@mcp.tool()
+@mcp.tool(annotations=_READ_ONLY)
 def list_projects() -> list[dict[str, Any]]:
     """List every Claude Code project that has at least one session on disk.
 
@@ -136,7 +163,7 @@ def list_projects() -> list[dict[str, Any]]:
     return [_project_dict(e, n) for e, n in rows]
 
 
-@mcp.tool()
+@mcp.tool(annotations=_READ_ONLY)
 def list_sessions(
     project: str | None = None,
     limit: int = 20,
@@ -152,7 +179,7 @@ def list_sessions(
     return recent_sessions(project_dir, limit, load_settings())
 
 
-@mcp.tool()
+@mcp.tool(annotations=_READ_ONLY)
 def get_session_summary(
     session_id: str,
     project: str | None = None,
@@ -169,7 +196,7 @@ def get_session_summary(
     return session_summary_dict(summarize_session(path), entry)
 
 
-@mcp.tool()
+@mcp.tool(annotations=_READ_ONLY)
 def get_session(
     session_id: str,
     project: str | None = None,
@@ -199,7 +226,7 @@ def get_session(
     return render_markdown(events, title=title, opts=opts)
 
 
-@mcp.tool()
+@mcp.tool(annotations=_READ_ONLY)
 def recall_recent(
     project: str | None = None,
     limit: int = 5,
@@ -216,7 +243,7 @@ def recall_recent(
     return list_sessions(project=project, limit=limit)
 
 
-@mcp.tool()
+@mcp.tool(annotations=_READ_ONLY)
 def search_sessions(
     query: str,
     project: str | None = None,
@@ -251,7 +278,7 @@ def _subagent_dict(ref: SubagentRef) -> dict[str, Any]:
     }
 
 
-@mcp.tool()
+@mcp.tool(annotations=_READ_ONLY)
 def list_memories(project: str | None = None) -> list[dict[str, Any]]:
     """List the curated memories Claude Code has saved for a project.
 
@@ -268,7 +295,7 @@ def list_memories(project: str | None = None) -> list[dict[str, Any]]:
     return memory_entries(_resolve_project(project))
 
 
-@mcp.tool()
+@mcp.tool(annotations=_READ_ONLY)
 def get_memory(name: str, project: str | None = None) -> dict[str, Any]:
     """Return one memory's full body and metadata by name (or unique prefix).
 
@@ -279,7 +306,7 @@ def get_memory(name: str, project: str | None = None) -> dict[str, Any]:
     return memory_detail(_resolve_project(project), name)
 
 
-@mcp.tool()
+@mcp.tool(annotations=_READ_ONLY)
 def search_memories(
     query: str,
     project: str | None = None,
@@ -298,7 +325,7 @@ def search_memories(
     return _query_memories(dirs, query, max_results)
 
 
-@mcp.tool()
+@mcp.tool(annotations=_READ_ONLY)
 def list_subagents(session_id: str, project: str | None = None) -> list[dict[str, Any]]:
     """List the subagent transcripts stored for a session.
 
@@ -316,12 +343,12 @@ def list_subagents(session_id: str, project: str | None = None) -> list[dict[str
     path = _resolve_session_path(project_dir, session_id)
     arts = discover_session_artifacts(project_dir, path.stem)
     out = [_subagent_dict(ref) for ref in arts.subagents]
-    for run in arts.workflow_runs:
-        out.extend(_subagent_dict(ref) for ref in run.agents)
+    for wf_run in arts.workflow_runs:
+        out.extend(_subagent_dict(ref) for ref in wf_run.agents)
     return out
 
 
-@mcp.tool()
+@mcp.tool(annotations=_READ_ONLY)
 def get_subagent(
     session_id: str,
     agent_id: str,
@@ -342,7 +369,7 @@ def get_subagent(
     project_dir = _resolve_project(project)
     path = _resolve_session_path(project_dir, session_id)
     arts = discover_session_artifacts(project_dir, path.stem)
-    refs = [*arts.subagents, *(a for run in arts.workflow_runs for a in run.agents)]
+    refs = [*arts.subagents, *(a for wf_run in arts.workflow_runs for a in wf_run.agents)]
     exact = [r for r in refs if r.agent_id == agent_id]
     matches = exact or [r for r in refs if r.agent_id.startswith(agent_id)]
     if not matches:
@@ -361,7 +388,7 @@ def get_subagent(
     return render_markdown(events, title=title, opts=opts, session_id=ref.agent_id)
 
 
-@mcp.tool()
+@mcp.tool(annotations=_READ_ONLY)
 def self_align(
     query: str | None = None,
     project: str | None = None,
@@ -371,11 +398,12 @@ def self_align(
     """One bounded retrieval packet to self-align before working — the preferred start.
 
     Returns the cheap layers in a single call: curated-memory matches/index, recent
-    session summaries, transcript snippets (when ``query`` is given), plus
+    session summaries, transcript snippets (when ``query`` is given), this project's
+    Codex CLI rollouts + handoffs (when a Codex archive exists), plus
     ``suggested_next`` calls for the expensive follow-ups and a ``guidance`` note.
     Carries NO full memory bodies or transcripts — pull those on demand via the
-    suggested ``get_memory`` / ``get_session`` / ``get_session_handoff`` calls only if
-    the task needs that detail.
+    suggested ``get_memory`` / ``get_session`` / ``get_session_handoff`` /
+    ``get_codex_handoff`` calls only if the task needs that detail.
 
     Recalled content is **dated evidence**, not authority: the live code and the
     user's current request win. Cite memory names / session IDs.
@@ -392,7 +420,133 @@ def self_align(
     return fit_packet(packet, max_chars)
 
 
-@mcp.tool()
+@mcp.tool(annotations=_READ_ONLY)
+def list_codex_sessions(project: str | None = None, limit: int = 10) -> list[dict[str, Any]]:
+    """List OpenAI Codex CLI sessions ("rollouts") for the same working tree.
+
+    Codex is a separate coding agent whose archive lives under ``~/.codex``; this
+    surfaces its sessions for THIS project so work done in Codex isn't invisible
+    here. Cheap: reads only each rollout's first line plus the thread-name index.
+    Empty when no Codex archive exists or the project has no rollouts.
+
+    Args:
+        project: slug or absolute local path; omit for the current cwd.
+        limit: cap on rollouts returned, newest first (default 10).
+    """
+    if not codex_store.codex_available():
+        return []
+    local = _resolve_local_path(project)
+    return [
+        {
+            "session_id": m.session_id,
+            "title": m.thread_name,
+            "timestamp": m.timestamp,
+            "cwd": m.cwd,
+            "originator": m.originator,
+        }
+        for m in codex_store.codex_sessions_for(local, limit=limit)
+    ]
+
+
+@mcp.tool(annotations=_READ_ONLY)
+def get_codex_session(
+    session_id: str,
+    mode: Mode = "transcript",
+    max_tool_chars: int = 2000,
+) -> str:
+    """Return one Codex rollout's full rendered markdown (same modes as get_session).
+
+    Args:
+        session_id: Codex session UUID or unique prefix (from ``list_codex_sessions``).
+        mode: ``transcript`` (default, prose only), ``compact``, or ``full``.
+        max_tool_chars: per-block truncation for tool I/O in compact/full modes.
+    """
+    path = codex_store.resolve_codex_session(session_id)
+    summary = codex_store.summarize_codex_session(path, codex_store.load_session_index())
+    events = codex_store.read_codex_session(path)
+    label = summary.ai_title or summary.first_user_text or summary.session_id
+    title = f"{label}  \n_Codex session {summary.session_id}_"
+    opts = RenderOptions(
+        mode=mode,
+        max_tool_result_chars=max_tool_chars,
+        max_tool_input_chars=max_tool_chars,
+    )
+    return render_markdown(events, title=title, opts=opts, session_id=summary.session_id)
+
+
+@mcp.tool(annotations=_READ_ONLY)
+def list_codex_handoffs(project: str | None = None) -> list[dict[str, Any]]:
+    """List Codex's per-session handoff digests (rollout summaries) for this project.
+
+    Codex writes these itself after sessions — titled digests of what happened and
+    how it concluded, the Codex analogue of Claude's compaction handoffs. Model-
+    written, so trust them below curated memories. Newest first.
+
+    Args:
+        project: slug or absolute local path; omit for the current cwd.
+    """
+    if not codex_store.codex_available():
+        return []
+    local = _resolve_local_path(project)
+    return [
+        {
+            "file": s.path.name,
+            "title": s.title,
+            "thread_id": s.thread_id,
+            "updated_at": s.updated_at,
+            "git_branch": s.git_branch,
+        }
+        for s in codex_store.codex_rollout_summaries(cwd=local)
+    ]
+
+
+@mcp.tool(annotations=_READ_ONLY)
+def get_codex_handoff(name: str) -> dict[str, Any]:
+    """Return one Codex handoff digest's full body, by filename or thread-id prefix.
+
+    Args:
+        name: the ``file`` from ``list_codex_handoffs`` / the self_align packet,
+            or a thread-id prefix.
+    """
+    return codex_store.read_codex_rollout_summary(name)
+
+
+@mcp.tool(annotations=_READ_ONLY)
+def get_codex_memory(max_chars: int = 4000) -> dict[str, Any]:
+    """Return Codex's consolidated memory summary (its model-written user profile).
+
+    This is ``~/.codex/memories/memory_summary.md`` — cross-project working
+    preferences and profile notes that Codex accumulated on this machine. It is
+    model-written, NOT hand-curated: trust it below the curated memory layer and
+    treat it as dated evidence. ``summary`` is None when Codex has no memory.
+
+    Args:
+        max_chars: cap on the returned text (default 4000).
+    """
+    return {
+        "source": "codex",
+        "summary": codex_store.codex_memory_summary(max_chars=max_chars),
+    }
+
+
+@mcp.tool(annotations=_READ_ONLY)
+def check_drift(project: str | None = None) -> dict[str, Any]:
+    """Mechanically verify this project's curated memories against its live code.
+
+    For every memory, checks that the file paths it cites still exist, that
+    ``path:line`` anchors still fall inside the file, and that ``[[links]]``
+    resolve. Purely deterministic — a finding means the memory's claims about
+    the repository no longer hold and it should be re-verified before being
+    trusted. Run this when recalled memories will drive decisions.
+
+    Args:
+        project: slug or absolute local path; omit for the current cwd's project.
+    """
+    project_dir = _resolve_project(project)
+    return drift_check.check_drift(project_dir, _resolve_local_path(project))
+
+
+@mcp.tool(annotations=_READ_ONLY)
 def get_session_handoff(session_id: str, project: str | None = None) -> dict[str, Any]:
     """Return a session's handoff digest (the compaction "where we left off" summary).
 

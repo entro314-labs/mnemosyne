@@ -1,4 +1,17 @@
 {
-  "$comment": "Opt-in SessionStart hook. Inactive by default — shipped empty so enabling auto-recall is an explicit, user-driven step. To activate, add a SessionStart entry that runs `syne recall --recent --max-chars 1500` (a small, capped, project-scoped brief — never a full transcript) and injects its stdout as additional context. Prefer the trigger-gated `syne align` directive over eager session-start loading; only wire this hook if you want a brief on every session. See README → 'Optional: session-start auto-recall'.",
-  "hooks": []
+  "$comment": "Deterministic continuity across the compaction boundary. SessionStart fires with source ∈ startup|resume|clear|compact; the matcher scopes injection to resume|compact ONLY — fresh sessions stay clean (the trigger-gated `syne align` directive covers those), while resumed/compacted sessions get a small, hard-capped self-align brief (memories index + recent sessions + Codex context, never a transcript) injected as context with no model discretion involved. The `command -v` guard makes the hook a silent no-op when `syne` isn't on PATH. Remove the SessionStart entry to opt out.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "resume|compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "command -v syne >/dev/null 2>&1 && syne recall --bundle --max-chars 2000 || true",
+            "timeout": 15
+          }
+        ]
+      }
+    ]
+  }
 }

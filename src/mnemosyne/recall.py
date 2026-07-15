@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Any, Literal
 from mnemosyne import query
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from pathlib import Path
 
     from mnemosyne.config import Settings
@@ -154,27 +155,41 @@ def _render_bundle(p: dict[str, Any]) -> str:
         slug = row.get("project_slug")
         return f" · _{str(slug).lstrip('-')}_" if multi_project and slug else ""
 
-    if p.get("memories"):
-        lines.append("\n**Curated memories**")
-        for m in p["memories"]:
-            t = f" ({m['type']})" if m.get("type") else ""
-            lines.append(
-                f"- **{m['name']}**{t}{project_suffix(m)} — {_short(m.get('description'))}"
-            )
-    if p.get("recent_sessions"):
-        lines.append("\n**Recent sessions**")
-        for r in p["recent_sessions"]:
-            sid, ts = r["session_id"][:8], _ts(r.get("last_timestamp"))
-            lines.append(f"- `{sid}` · {ts} · {_short(r.get('title'))}{project_suffix(r)}")
-    if p.get("session_hits"):
-        lines.append("\n**Transcript hits**")
-        for h in p["session_hits"]:
-            sid, snip = h["session_id"][:8], _short(h.get("snippet"), 160)
-            lines.append(f"- `{sid}` · {_short(h.get('title'))}{project_suffix(h)}  …{snip}…")
-    if p.get("suggested_next"):
-        lines.append("\n**Suggested next**")
-        for s in p["suggested_next"]:
-            lines.append(f"- `{s['call']}` — {s['why']}")
+    def memory_row(m: dict[str, Any]) -> str:
+        t = f" ({m['type']})" if m.get("type") else ""
+        return f"- **{m['name']}**{t}{project_suffix(m)} — {_short(m.get('description'))}"
+
+    def recent_row(r: dict[str, Any]) -> str:
+        sid, ts = r["session_id"][:8], _ts(r.get("last_timestamp"))
+        return f"- `{sid}` · {ts} · {_short(r.get('title'))}{project_suffix(r)}"
+
+    def hit_row(h: dict[str, Any]) -> str:
+        sid, snip = h["session_id"][:8], _short(h.get("snippet"), 160)
+        return f"- `{sid}` · {_short(h.get('title'))}{project_suffix(h)}  …{snip}…"
+
+    def codex_row(c: dict[str, Any]) -> str:
+        sid, ts = c["session_id"][:8], _ts(c.get("timestamp"))
+        return f"- `{sid}` · {ts} · {_short(c.get('title')) or '(untitled)'}"
+
+    def codex_summary_row(c: dict[str, Any]) -> str:
+        return f"- `{c['file']}` · {_ts(c.get('updated_at'))} · {_short(c.get('title'))}"
+
+    def suggestion_row(s: dict[str, Any]) -> str:
+        return f"- `{s['call']}` — {s['why']}"
+
+    sections: tuple[tuple[str, str, Callable[[dict[str, Any]], str]], ...] = (
+        ("memories", "**Curated memories**", memory_row),
+        ("recent_sessions", "**Recent sessions**", recent_row),
+        ("session_hits", "**Transcript hits**", hit_row),
+        ("codex_sessions", "**Codex sessions** _(same project, via Codex CLI)_", codex_row),
+        ("codex_summaries", "**Codex handoffs**", codex_summary_row),
+        ("suggested_next", "**Suggested next**", suggestion_row),
+    )
+    for key, header, row in sections:
+        rows = p.get(key)
+        if rows:
+            lines.append("\n" + header)
+            lines.extend(row(r) for r in rows)
     if p.get("guidance"):
         lines.append("\n_" + p["guidance"] + "_")
     return "\n".join(lines)
@@ -187,9 +202,20 @@ def build_bundle(
     query_str: str | None = None,
     max_chars: int = 6000,
     fmt: RecallFormat = "markdown",
+    include_codex: bool = True,
+    codex_home: Path | None = None,
 ) -> str:
     """Render the aggregated self-align packet (the one-call entry point), capped."""
-    packet = query.fit_packet(query.self_align(dirs, settings, query=query_str), max_chars)
+    packet = query.fit_packet(
+        query.self_align(
+            dirs,
+            settings,
+            query=query_str,
+            include_codex=include_codex,
+            codex_home=codex_home,
+        ),
+        max_chars,
+    )
     if fmt == "json":
         return json.dumps(packet, ensure_ascii=False, separators=(",", ":"))
     return _cap(_render_bundle(packet), max_chars)
