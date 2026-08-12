@@ -1,7 +1,10 @@
 """Parse Claude Code session JSONL files into typed events.
 
 Sessions live in ~/.claude/projects/<project-slug>/<session-uuid>.jsonl
-The slug is the absolute cwd with "/" replaced by "-" and a leading "-".
+The slug is the absolute cwd with "/", "." and "_" each replaced by "-", so it is
+lossy and not injective: distinct trees can share one archive directory. The `cwd`
+recorded on each record is the authoritative project identity — see
+`session_touches_project`.
 """
 
 from __future__ import annotations
@@ -40,7 +43,25 @@ class ToolResultBlock:
     is_error: bool = False
 
 
-Block = TextBlock | ThinkingBlock | ToolUseBlock | ToolResultBlock
+@dataclass(slots=True)
+class AttachmentBlock:
+    """A non-text content block carried inline in a message.
+
+    Covers `image`, `document`, and `fallback` records (and anything else the
+    vendor adds later). The base64 payload is deliberately NOT retained — a single
+    screenshot is ~180KB of base64 and a PDF over 1MB, which would dwarf the
+    transcript it belongs to. The decoded byte size is kept instead, so the export
+    records that something was attached and how big it was without embedding it.
+    """
+
+    kind: str
+    media_type: str | None = None
+    title: str | None = None
+    byte_size: int | None = None
+    detail: dict[str, Any] = field(default_factory=dict)
+
+
+Block = TextBlock | ThinkingBlock | ToolUseBlock | ToolResultBlock | AttachmentBlock
 
 
 @dataclass(slots=True)
@@ -143,9 +164,42 @@ def _parse_blocks(content: Any) -> list[Block]:
                     )
                 )
             case _:
-                # Unknown block types are dropped silently.
-                continue
+                # Never drop silently: preserve type + safe metadata so the
+                # export records that content existed here (source-integrity rule).
+                blocks.append(_parse_attachment_block(b, str(bt) if bt else "unknown"))
     return blocks
+
+
+# base64 encodes 3 bytes as 4 chars; padding costs at most 2 bytes.
+def _b64_size(data: str) -> int:
+    return max(0, (len(data) * 3) // 4 - data.count("="))
+
+
+_ATTACHMENT_PAYLOAD_KEYS = frozenset({"type", "source", "title"})
+
+
+def _parse_attachment_block(b: dict[str, Any], kind: str) -> AttachmentBlock:
+    """Normalize an inline non-text block, dropping only the binary payload."""
+    source = b.get("source")
+    media_type: str | None = None
+    byte_size: int | None = None
+    if isinstance(source, dict):
+        raw_media = source.get("media_type")
+        media_type = str(raw_media) if raw_media else None
+        data = source.get("data")
+        if isinstance(data, str):
+            byte_size = _b64_size(data)
+    raw_title = b.get("title")
+    # Everything else is small structured metadata (e.g. `fallback`'s from/to
+    # models) and is worth keeping verbatim.
+    detail = {k: v for k, v in b.items() if k not in _ATTACHMENT_PAYLOAD_KEYS}
+    return AttachmentBlock(
+        kind=kind,
+        media_type=media_type,
+        title=str(raw_title) if raw_title else None,
+        byte_size=byte_size,
+        detail=detail,
+    )
 
 
 def _parse_message(obj: dict[str, Any], role: str) -> Message:
@@ -376,12 +430,73 @@ def _strip_reminder_wrappers(text: str) -> str:
     return _REMINDER_RE.sub("", text)
 
 
+# Claude Code flattens a path into a slug by replacing the separator AND the two
+# characters it treats as unsafe in a directory name. Verified against every slug
+# directory in a real archive: `/`, `.`, and `_` all collapse to `-`
+# (`/Users/x/.ssh` → `-Users-x--ssh`, `…/macos_contacts` → `…-macos-contacts`).
+# Replacing only `/` silently resolves such projects to a directory that does not
+# exist, which reads as "no archive" rather than as an error.
+_SLUG_UNSAFE_RE = re.compile(r"[/._]")
+
+
+def project_slug(cwd: Path) -> str:
+    """Flatten an absolute working directory into its Claude Code archive slug."""
+    return _SLUG_UNSAFE_RE.sub("-", str(cwd.resolve()))
+
+
 def project_dir_for_cwd(cwd: Path, claude_home: Path | None = None) -> Path:
     """Map an absolute working directory to its ~/.claude/projects slug."""
     home = claude_home or Path.home() / ".claude" / "projects"
-    slug = str(cwd.resolve()).replace("/", "-")
-    return home / slug
+    return home / project_slug(cwd)
 
 
-def list_session_files(project_dir: Path) -> list[Path]:
-    return sorted(project_dir.glob("*.jsonl"))
+def path_in_project(cwd: str, project_path: Path) -> bool:
+    """True when a recorded `cwd` is the project root itself or a directory below it."""
+    try:
+        candidate = Path(cwd)
+    except (TypeError, ValueError):
+        return False
+    return candidate == project_path or project_path in candidate.parents
+
+
+def session_touches_project(path: Path, project_path: Path) -> bool:
+    """True when any `cwd` recorded in a session lies within `project_path`.
+
+    The slug encoding is lossy and not injective, so one archive directory can
+    hold sessions belonging to different working trees (`foo.bar` and `foo_bar`
+    both flatten to `foo-bar`). The recorded `cwd` is authoritative; a session is
+    in scope when it did any work at or below the requested root.
+
+    Scanning stops at the first match, so the common case (a session that starts
+    in the project) costs one line.
+    """
+    try:
+        with path.open(encoding="utf-8") as f:
+            for raw in f:
+                stripped = raw.strip()
+                if not stripped:
+                    continue
+                try:
+                    obj = json.loads(stripped)
+                except json.JSONDecodeError:
+                    continue
+                cwd = obj.get("cwd")
+                if cwd and path_in_project(str(cwd), project_path):
+                    return True
+    except OSError:
+        return False
+    return False
+
+
+def list_session_files(project_dir: Path, *, project_path: Path | None = None) -> list[Path]:
+    """Session files in an archive directory, newest-name-sorted.
+
+    Pass ``project_path`` to restrict the result to sessions that actually worked
+    in that tree; omit it to take the directory at face value (explicit
+    all-projects scope, or selection by an unambiguous session id).
+    """
+    files = sorted(project_dir.glob("*.jsonl"))
+    if project_path is None:
+        return files
+    root = project_path.resolve()
+    return [p for p in files if session_touches_project(p, root)]

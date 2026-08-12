@@ -22,6 +22,7 @@ def test_hooks_json_targets_resume_and_compact_only() -> None:
     assert "syne recall --bundle" in hook["command"]
     assert "--max-chars" in hook["command"]
     assert "command -v syne" in hook["command"]
+    assert "|| true" not in hook["command"]
     assert isinstance(hook["timeout"], int)
 
 
@@ -33,4 +34,5 @@ def test_plugin_versions_match_package() -> None:
         (ASSETS / ".claude-plugin" / "marketplace.json").read_text(encoding="utf-8")
     )
     assert plugin["version"] == version
+    assert isinstance(plugin["repository"], str)
     assert [p["version"] for p in marketplace["plugins"]] == [version]

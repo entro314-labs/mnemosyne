@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import pytest
+
 from mnemosyne.parser import (
+    AttachmentBlock,
     Message,
     TextBlock,
     ToolResultBlock,
@@ -12,6 +15,7 @@ from mnemosyne.render import (
     RenderOptions,
     _coalesce_same_role,
     _scrub_ack,
+    _truncate,
     render_markdown,
 )
 
@@ -191,3 +195,57 @@ def test_tool_result_only_user_turn_has_no_user_header() -> None:
     ]
     md = render_markdown(events, opts=RenderOptions(mode="full"))
     assert "👤" not in md  # no User header for the tool-result turn
+
+
+# ---- hard caps must be positive (F-07) ----
+
+
+@pytest.mark.parametrize("bad", [0, -1, -2000])
+def test_render_options_rejects_non_positive_caps(bad: int) -> None:
+    """A zero/negative cap previously meant "unlimited", defeating the boundary."""
+    with pytest.raises(ValueError, match="positive integer or None"):
+        RenderOptions(max_tool_result_chars=bad)
+    with pytest.raises(ValueError, match="positive integer or None"):
+        RenderOptions(max_tool_input_chars=bad)
+
+
+def test_render_options_allows_explicit_none_for_unlimited() -> None:
+    opts = RenderOptions(max_tool_result_chars=None)
+    assert opts.max_tool_result_chars is None
+
+
+def test_truncate_none_means_unlimited() -> None:
+    assert _truncate("x" * 100, None) == "x" * 100
+
+
+def test_truncate_applies_a_positive_limit() -> None:
+    assert _truncate("x" * 100, 10).startswith("x" * 10)
+    assert "truncated 90 chars" in _truncate("x" * 100, 10)
+
+
+# ---- inline attachment rendering (F-03) ----
+
+
+def test_attachment_block_renders_when_attachments_included() -> None:
+    msg = Message(
+        uuid="u1",
+        parent_uuid=None,
+        timestamp="2026-01-01T00:00:00Z",
+        role="user",
+        blocks=[AttachmentBlock(kind="image", media_type="image/png", byte_size=2048)],
+    )
+    out = render_markdown([msg], opts=RenderOptions(include_attachments=True))
+    assert "image" in out
+    assert "image/png" in out
+    assert "2 KB" in out
+
+
+def test_attachment_block_hidden_without_the_flag() -> None:
+    msg = Message(
+        uuid="u1",
+        parent_uuid=None,
+        timestamp="2026-01-01T00:00:00Z",
+        role="user",
+        blocks=[AttachmentBlock(kind="image", media_type="image/png", byte_size=2048)],
+    )
+    assert "image/png" not in render_markdown([msg], opts=RenderOptions(include_attachments=False))

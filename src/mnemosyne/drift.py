@@ -29,6 +29,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from mnemosyne.codex import CODEX_HOME
 from mnemosyne.memory import collect_memories
 
 if TYPE_CHECKING:
@@ -206,7 +207,9 @@ def _ref_target(
     ref_path: str,
     roots: tuple[Path, ...],
     filenames: frozenset[str],
-) -> Path | None | bool:
+    *,
+    nested_archive: Path | None = None,
+) -> Path | bool | None:
     """Resolve a reference against the roots (worktree first, then the archive).
 
     Returns the resolved ``Path`` when a concrete file/dir is found, ``True``
@@ -220,10 +223,11 @@ def _ref_target(
         candidate = root / p
         if candidate.exists():
             return candidate
-    # Archive artifacts live one level down (<archive>/<session-id>/session-memory/…),
-    # and memories cite them without the session prefix — try that level too.
-    if len(roots) > 1:
-        found = next(roots[-1].glob(f"*/{p.as_posix()}"), None)
+    # Claude archive artifacts live one level down
+    # (<archive>/<session-id>/session-memory/…), and memories cite them without
+    # the session prefix — try that level too.
+    if nested_archive is not None:
+        found = next(nested_archive.glob(f"*/{p.as_posix()}"), None)
         if found is not None:
             return found
     if "/" not in ref_path and p.name in filenames:
@@ -237,6 +241,7 @@ def check_memory(
     known_names: frozenset[str],
     *,
     archive_dir: Path | None = None,
+    extra_roots: tuple[Path, ...] = (),
     filenames: frozenset[str] = frozenset(),
     now: datetime | None = None,
 ) -> MemoryFinding:
@@ -256,10 +261,10 @@ def check_memory(
             link for link in memory.links if link not in known_names and _LINK_NAME_RE.match(link)
         ],
     )
-    roots = (project_root, archive_dir) if archive_dir is not None else (project_root,)
+    roots = (project_root, *((archive_dir,) if archive_dir is not None else ()), *extra_roots)
     for ref in extract_path_refs(memory.body):
         ref_path, line = _split_line_anchor(ref)
-        target = _ref_target(ref_path, roots, filenames)
+        target = _ref_target(ref_path, roots, filenames, nested_archive=archive_dir)
         if target is None:
             finding.missing_paths.append(ref)
             continue
@@ -274,6 +279,7 @@ def check_drift(
     project_dir: Path,
     project_root: Path,
     *,
+    codex_home: Path | None = None,
     now: datetime | None = None,
 ) -> dict[str, Any]:
     """Check every curated memory of one project against its live repository.
@@ -284,6 +290,8 @@ def check_drift(
     coll = collect_memories(project_dir)
     known = frozenset(m.name for m in coll.memories)
     filenames = _filename_index(project_root) if coll.memories else frozenset()
+    codex_root = codex_home if codex_home is not None else CODEX_HOME
+    extra_roots = (codex_root,) if codex_root.is_dir() else ()
     findings: list[MemoryFinding] = []
     clean = 0
     for m in coll.memories:
@@ -292,6 +300,7 @@ def check_drift(
             project_root,
             known,
             archive_dir=project_dir,
+            extra_roots=extra_roots,
             filenames=filenames,
             now=now,
         )
@@ -317,9 +326,9 @@ def check_drift(
             for f in findings
         ],
         "guidance": (
-            "A finding means the memory cites files that moved or shrank since it was "
-            "written — treat that memory as stale until re-verified against the live "
-            "code. Dangling links mark memories that were planned but never written."
+            "A finding is an unresolved file, line anchor, or memory link in the configured "
+            "worktree/archive roots. It is a deterministic review signal, not proof that the "
+            "memory's entire body is stale; re-verify the cited claim before relying on it."
         ),
     }
 

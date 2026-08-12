@@ -168,8 +168,8 @@ categories you enable):
 Each `.meta.json` carries everything a downstream tool needs without
 re-parsing the raw JSONL: `{session_id, project_slug, ai_title, first_prompt,
 first_timestamp, last_timestamp, user_count, assistant_count, source_jsonl,
-source_size_bytes, rendered_file, rendered_size_bytes, mode, format,
-generated_at}`. `index.json` is the same data aggregated across all sessions
+source_size_bytes, source_malformed_lines, rendered_file, rendered_size_bytes,
+mode, format, generated_at}`. `index.json` is the same data aggregated across all sessions
 in the export. `memory/` is written once per project; everything else is
 per-session, keyed to the transcript's filename.
 
@@ -209,9 +209,21 @@ and idempotent — same input always yields the same output (see `clean.py`):
 | `jsonl` | One JSON object per coalesced turn: `{turn_id, turn_index, role, timestamp, text, char_count, session_id, project_slug, project_path}`. `turn_id` is `{session_id}#{turn_index}` — stable across re-renders, safe to use as a vector store primary key. | Embedding pipelines, vector store ingestion, structured downstream consumers. |
 | `plain` | No markdown decoration. `=== USER (ts) === / === ASSISTANT (ts) ===` headers. | Pasting into prompts for models that prefer no markup. |
 
+`--include-attachments` is honoured by **all three** formats. Attachments become
+their own record (`role: "attachment"` in `jsonl`, an `=== ATTACHMENT ===`
+section in `plain`). Inline `image` / `document` / `fallback` content blocks are
+preserved as a one-line descriptor carrying type, media type, title and decoded
+size — the base64 payload itself is never embedded, since a single screenshot
+outweighs the transcript it belongs to. Content-block types mnemosyne does not
+recognise are preserved the same way rather than dropped.
+
+`plain` strips only decoration *mnemosyne generated* (its own fences, role
+headers and `<details>` wrappers). Original user or assistant text may itself
+contain markdown; that is content, and is left intact.
+
 ## MCP server
 
-`syne mcp` speaks MCP over stdio. Nineteen read-only tools — one aggregated
+`syne mcp` speaks MCP over stdio (MCP Python SDK 2.x). Nineteen read-only tools — one aggregated
 self-align entry point, plus tools over transcripts, the curated memory layer,
 handoff digests, hidden subagent transcripts, the Codex CLI archive, and memory
 drift. Every tool carries MCP `readOnlyHint` annotations (nothing writes, nothing
@@ -320,14 +332,20 @@ born. Fresh sessions stay clean; no model discretion is involved.
 ```json
 { "matcher": "resume|compact",
   "hooks": [{ "type": "command",
-    "command": "command -v syne >/dev/null 2>&1 && syne recall --bundle --max-chars 2000 || true" }] }
+    "command": "command -v syne >/dev/null 2>&1 || exit 0; syne recall --bundle --max-chars 2000" }] }
 ```
 
 The brief is `syne recall --bundle`: the same bounded packet as the MCP
 `self_align` tool (memory index + recent sessions + Codex context +
 suggested-next), capped at 2000 characters, never a transcript. When `syne`
-isn't on PATH the hook is a silent no-op. Remove the `SessionStart` entry from
+isn't on PATH the hook is a silent no-op; recall failures remain visible as hook
+errors instead of being reported as success. Remove the `SessionStart` entry from
 `~/.claude/plugins/mnemosyne/hooks/hooks.json` to opt out.
+
+Every character cap is a **hard boundary**: it must be a positive integer, or an
+explicit `None` in the Python API to opt out. Zero and negative values are
+rejected rather than quietly meaning "unlimited", so a bad host or config value
+cannot turn a bounded brief into an unbounded one.
 
 For agents that can't speak MCP — or for ad-hoc briefs — the same reader works
 from any shell or hook:
@@ -342,12 +360,12 @@ syne recall "JWT" --format json           # machine-readable for piping
 ### Drift checks: recall you can trust
 
 `syne drift` (and the `check_drift` MCP tool) mechanically verifies every
-curated memory against the live repository: cited file paths must exist
-(worktree, archive, or anywhere in the tree for bare names — vendor dirs
-pruned), `path:line` anchors must still fall inside the file, and `[[links]]`
-must resolve. Purely deterministic — a finding means the memory's claims about
-the repo no longer hold, so treat it as stale until re-verified. This is the
-computed counterpart of the directive's "dated evidence" rule.
+curated memory against the live repository and known local archives: cited file
+paths must resolve (worktree, Claude archive, Codex archive, or anywhere in the
+worktree for bare names — vendor dirs pruned), `path:line` anchors must still
+fall inside the file, and `[[links]]` must resolve. The result is deterministic,
+but an unresolved reference is a review signal rather than proof that the
+memory's entire body is stale. Re-verify the cited claim before relying on it.
 
 ## Settings file
 
@@ -373,10 +391,18 @@ last_used = "2026-05-19T15:13:04+00:00"
 
 The registry is rebuilt from the filesystem each run; user-edited fields
 (`friendly_name`, `git_*`) are preserved. `last_used` updates whenever you
-export from a project. Claude Code's slug encoding (`/` → `-`) is lossy
-(`My-Projects` and `My/Projects` collide), so `syne` resolves the real local
-path by reading the `cwd` field stored inside each session record —
-authoritative, not heuristic.
+export from a project. Claude Code's slug encoding replaces `/`, `.` **and** `_`
+with `-`, so it is lossy and not injective: `My-Projects`, `My/Projects`,
+`My.Projects` and `My_Projects` all flatten to the same directory name. `syne`
+therefore resolves the real local path by reading the `cwd` field stored inside
+each session record — authoritative, not heuristic.
+
+Because one archive directory can legitimately hold sessions from more than one
+working tree, the default (current-project) scope filters sessions by their
+recorded `cwd`: a session is in scope when it did work at or below the project
+root. Anything excluded is reported, never silently hidden. Passing
+`--project-dir` explicitly is treated as naming the directory, and takes it at
+face value.
 
 ## Durability contract
 
@@ -384,10 +410,13 @@ Multi-file operations (export bundles, merges, plugin installs) are
 **fail-visible, not transactional**: each file is written independently, an
 error anywhere aborts loudly, and files completed before the failure are left
 on disk for inspection — nothing is rolled back. Re-running the same command is
-idempotent (same inputs → same filenames → same content), so recovery is always
-"fix the cause, run it again." The few single files where a torn write would
-corrupt shared state (`known_marketplaces.json`, instruction files managed by
-`syne align`) are written atomically via temp-file-and-rename.
+**semantically** idempotent (same inputs → same filenames → same rendered
+content), so recovery is always "fix the cause, run it again." It is not
+byte-for-byte reproducible: sidecars and project indexes stamp a fresh
+`generated_at`, so those files differ between runs by design. The few single
+files where a torn write would
+corrupt shared state (`config.toml`, `known_marketplaces.json`, instruction files
+managed by `syne align`) are written atomically via temp-file-and-rename.
 
 Malformed JSONL lines in a source session are tolerated (Claude Code appends
 live, so a partially written final record is normal) but **counted, never
@@ -428,7 +457,7 @@ src/mnemosyne/
   recall.py         # `syne recall` — capped, headers-first stdout brief for hooks / non-MCP agents
   align.py          # `syne align` — idempotent CLAUDE.md/AGENTS.md self-alignment directive writer
   cli.py            # cyclopts app: list / export / export-all / merge / recall / align / install / mcp
-  mcp_server.py     # MCPServer with 13 read-only tools (self_align + sessions + memories + subagents)
+  mcp_server.py     # MCP 2.0 MCPServer with 19 read-only tools
   installer.py      # syne install / uninstall — deploys plugin to ~/.claude/plugins/
   plugin_assets/    # bundled plugin templates (.claude-plugin/, skills/, commands/, .mcp.json)
 tests/

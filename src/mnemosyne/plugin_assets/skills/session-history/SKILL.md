@@ -74,8 +74,9 @@ sessions for the *same* projects. Don't treat Codex work as invisible.
 
 - `check_drift(project?)` — mechanically verifies every curated memory's cited
   file paths, `path:line` anchors, and `[[links]]` against the live repository.
-  Run it when recalled memories will drive a decision; a finding means that
-  memory is stale until re-verified. Deterministic — no guessing involved.
+  Run it when recalled memories will drive a decision; a finding means a cited
+  reference did not resolve and needs review, not that the whole memory is
+  necessarily stale. Deterministic — no guessing involved.
 
 ### Subagent tools — the work hidden behind Task/workflow calls
 

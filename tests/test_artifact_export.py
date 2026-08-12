@@ -211,3 +211,84 @@ def test_artifact_write_result_total_and_merge() -> None:
     assert a.scripts == 1
     assert a.summaries == 1
     assert a.total == 7
+
+
+# ---- managed subtrees are reconciled, not merely appended to (F-06) ----
+
+
+def test_rerun_removes_artifacts_whose_source_disappeared(tmp_path: Path) -> None:
+    """A subagent deleted upstream must stop appearing in the export."""
+    proj = tmp_path / "-proj"
+    _make_session_tree(proj)
+    out = tmp_path / "export"
+    out.mkdir()
+    selection = ArtifactSelection.resolve(subagents=True)
+
+    arts = discover_session_artifacts(proj, SESSION_ID)
+    write_session_artifacts(arts, out, "s", opts=RenderOptions(), selection=selection)
+    stale = out / "s.subagents" / "ghost-agent.md"
+    stale.write_text("output from a source that no longer exists\n", encoding="utf-8")
+
+    write_session_artifacts(arts, out, "s", opts=RenderOptions(), selection=selection)
+
+    assert not stale.exists()
+    assert (out / "s.subagents" / "index.json").is_file()
+
+
+def test_selected_but_empty_category_clears_its_stale_subtree(tmp_path: Path) -> None:
+    proj = tmp_path / "-proj"
+    _make_session_tree(proj)
+    out = tmp_path / "export"
+    out.mkdir()
+    selection = ArtifactSelection.resolve(subagents=True)
+
+    arts = discover_session_artifacts(proj, SESSION_ID)
+    write_session_artifacts(arts, out, "s", opts=RenderOptions(), selection=selection)
+    assert (out / "s.subagents").is_dir()
+
+    # Same selection, but the source now yields nothing.
+    empty = discover_session_artifacts(tmp_path / "-empty-proj", SESSION_ID)
+    write_session_artifacts(empty, out, "s", opts=RenderOptions(), selection=selection)
+
+    assert not (out / "s.subagents").exists()
+
+
+def test_unselected_category_is_left_untouched(tmp_path: Path) -> None:
+    proj = tmp_path / "-proj"
+    _make_session_tree(proj)
+    out = tmp_path / "export"
+    out.mkdir()
+
+    write_session_artifacts(
+        discover_session_artifacts(proj, SESSION_ID),
+        out,
+        "s",
+        opts=RenderOptions(),
+        selection=ArtifactSelection.resolve(full=True),
+    )
+    assert (out / "s.tool-results").is_dir()
+
+    # Re-export selecting only subagents: tool-results is not ours to touch now.
+    write_session_artifacts(
+        discover_session_artifacts(proj, SESSION_ID),
+        out,
+        "s",
+        opts=RenderOptions(),
+        selection=ArtifactSelection.resolve(subagents=True),
+    )
+    assert (out / "s.tool-results" / "out.txt").is_file()
+
+
+def test_no_staging_directories_survive_a_write(tmp_path: Path) -> None:
+    proj = tmp_path / "-proj"
+    _make_session_tree(proj)
+    out = tmp_path / "export"
+    out.mkdir()
+    write_session_artifacts(
+        discover_session_artifacts(proj, SESSION_ID),
+        out,
+        "s",
+        opts=RenderOptions(),
+        selection=ArtifactSelection.resolve(full=True),
+    )
+    assert [p.name for p in out.rglob(".*.staging")] == []

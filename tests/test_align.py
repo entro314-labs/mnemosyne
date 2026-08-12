@@ -18,6 +18,7 @@ from mnemosyne.align import (
     target_files,
     upsert_region,
 )
+from mnemosyne.parser import project_slug
 
 # ---- render_block ----
 
@@ -145,17 +146,29 @@ def test_gate_false_when_nothing_present(tmp_path: Path) -> None:
 def test_gate_true_via_exports(tmp_path: Path) -> None:
     local = tmp_path / "proj"
     local.mkdir()
-    (local / ".mnemosyne-exports").mkdir()
+    exports = local / ".mnemosyne-exports"
+    exports.mkdir()
+    (exports / "session.md").write_text("# transcript\n", encoding="utf-8")
     home = tmp_path / "claude"
     (home / "projects").mkdir(parents=True)
     assert is_available(local, claude_home=home) is True
+
+
+def test_gate_false_for_empty_export_dir(tmp_path: Path) -> None:
+    """`export-all` creates the directory before filtering; empty is not an archive."""
+    local = tmp_path / "proj"
+    local.mkdir()
+    (local / ".mnemosyne-exports").mkdir()
+    home = tmp_path / "claude"
+    (home / "projects").mkdir(parents=True)
+    assert is_available(local, claude_home=home) is False
 
 
 def test_gate_true_via_sessions(tmp_path: Path) -> None:
     local = tmp_path / "proj"
     local.mkdir()
     home = tmp_path / "claude"
-    slug = str(local.resolve()).replace("/", "-")
+    slug = project_slug(local)
     slug_dir = home / "projects" / slug
     slug_dir.mkdir(parents=True)
     (slug_dir / "s.jsonl").write_text("{}\n", encoding="utf-8")
@@ -178,7 +191,7 @@ def test_gate_true_via_curated_memories(tmp_path: Path) -> None:
     local = tmp_path / "proj"
     local.mkdir()
     home = tmp_path / "claude"
-    slug = str(local.resolve()).replace("/", "-")
+    slug = project_slug(local)
     memory_dir = home / "projects" / slug / "memory"
     memory_dir.mkdir(parents=True)
     (memory_dir / "a-fact.md").write_text("---\nname: a-fact\n---\nBody.\n", encoding="utf-8")
@@ -190,7 +203,7 @@ def test_gate_ignores_memory_index_alone(tmp_path: Path) -> None:
     local = tmp_path / "proj"
     local.mkdir()
     home = tmp_path / "claude"
-    slug = str(local.resolve()).replace("/", "-")
+    slug = project_slug(local)
     memory_dir = home / "projects" / slug / "memory"
     memory_dir.mkdir(parents=True)
     (memory_dir / "MEMORY.md").write_text("- index\n", encoding="utf-8")

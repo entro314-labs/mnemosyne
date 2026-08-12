@@ -5,11 +5,16 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING
 
+import pytest
+
+from mnemosyne import config
 from mnemosyne.config import (
     ProjectEntry,
     Settings,
     _derive_friendly_name,
     discover_projects,
+    load_settings,
+    save_settings,
     sync_registry,
 )
 
@@ -98,3 +103,32 @@ def test_discover_skips_non_slug_dirs(tmp_path: Path) -> None:
 
     entries = discover_projects(claude_root)
     assert [e.slug for e in entries] == ["-foo-bar"]
+
+
+def test_save_settings_round_trips_through_atomic_replace(tmp_path: Path) -> None:
+    path = tmp_path / "config.toml"
+    settings = Settings(projects={"-proj": ProjectEntry(slug="-proj", local_path="/work/proj")})
+    save_settings(settings, path)
+    assert load_settings(path) == settings
+    assert not list(tmp_path.glob(".config.toml.*"))
+
+
+def test_save_settings_failure_preserves_existing_registry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "config.toml"
+    original = Settings(projects={"-old": ProjectEntry(slug="-old")})
+    save_settings(original, path)
+    before = path.read_bytes()
+
+    def fail_after_partial_write(payload, handle) -> None:
+        _ = payload
+        handle.write(b"partial")
+        raise OSError("simulated interrupted write")
+
+    monkeypatch.setattr(config.tomli_w, "dump", fail_after_partial_write)
+    with pytest.raises(OSError, match="interrupted"):
+        save_settings(Settings(projects={"-new": ProjectEntry(slug="-new")}), path)
+
+    assert path.read_bytes() == before
+    assert not list(tmp_path.glob(".config.toml.*"))

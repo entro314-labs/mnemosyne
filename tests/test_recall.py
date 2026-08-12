@@ -125,6 +125,18 @@ def test_bundle_markdown(tmp_path: Path) -> None:
     assert "get_memory(" in out
 
 
+def test_bundle_markdown_budget_retains_rows_that_fit_rendered_output(tmp_path: Path) -> None:
+    out = build_bundle(
+        [_make_project(tmp_path)],
+        Settings(),
+        query_str="JWT",
+        max_chars=800,
+    )
+    assert len(out) <= 800
+    assert "**Curated memories**" in out
+    assert "**Recent sessions**" in out
+
+
 def test_bundle_json(tmp_path: Path) -> None:
     parsed = json.loads(build_bundle([_make_project(tmp_path)], Settings(), fmt="json"))
     assert "suggested_next" in parsed

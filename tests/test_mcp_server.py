@@ -7,6 +7,7 @@ fallback for fixtures created with earlier SDK versions.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import TYPE_CHECKING
 
@@ -128,6 +129,15 @@ def fake_claude_home(tmp_path: Path, monkeypatch):
 def _call(tool):
     """Return the registered function, unwrapping older SDK wrappers if needed."""
     return tool.fn if hasattr(tool, "fn") else tool
+
+
+def test_all_registered_tools_are_read_only() -> None:
+    tools = asyncio.run(mcp_server.mcp.list_tools())
+    assert len(tools) == 19
+    # MCP 2.0 renamed the ToolAnnotations fields to snake_case.
+    assert all(tool.annotations and tool.annotations.read_only_hint is True for tool in tools)
+    assert all(tool.annotations and tool.annotations.destructive_hint is False for tool in tools)
+    assert all(tool.annotations and tool.annotations.open_world_hint is False for tool in tools)
 
 
 def test_list_projects_returns_discovered_entry(fake_claude_home) -> None:

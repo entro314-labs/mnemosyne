@@ -5,6 +5,99 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+Correctness and currency pass over the whole archive path, from an intent-fidelity
+audit. Project identity is repaired at its root, every hard cap is now actually
+hard, no source record is dropped silently, and derived output finally mirrors the
+sources it came from.
+
+### Changed
+- **MCP server ported to the MCP Python SDK 2.x** (`mcp.server.mcpserver.MCPServer`,
+  replacing 1.x `FastMCP`). All 19 tool names and response shapes are unchanged and
+  still annotated read-only; `ToolAnnotations` now uses the SDK's snake_case field
+  names, and the server reports its package version over the wire. Verified with a
+  real stdio initialize / list_tools / call_tool handshake.
+- **Selected artifact categories are reconciled, not appended to.** Each managed
+  subtree (`.subagents/`, `.workflows/`, `.tool-results/`, `memory/`) is rendered
+  into a staging directory and swapped in, so a source deleted upstream now
+  disappears from the export instead of surviving every rerun as false derived
+  state. Selecting a category that yields nothing removes its stale subtree;
+  *unselected* categories are still never touched. A failed render leaves the
+  previous good output in place.
+- **`syne align` needs real export content.** A bare `.mnemosyne-exports/`
+  directory — which `export-all` can leave behind when every session is filtered
+  out — no longer counts as a searchable archive.
+- Documented the durability contract as **semantic** idempotency: reruns produce
+  the same rendered content, but sidecars and indexes stamp a fresh `generated_at`,
+  so output is deliberately not byte-for-byte reproducible.
+
+### Fixed
+- **Project archives whose path contains `.` or `_` were invisible.** Claude Code
+  flattens `/`, `.` and `_` to `-` when naming a slug directory; mnemosyne replaced
+  only `/`, so it computed a directory that does not exist and reported "no
+  archive" for those projects (verified against a real archive: `/Users/x/.ssh`,
+  `…/macos_contacts`). The slug rule now matches Claude Code exactly.
+- **Default project scope could return another project's sessions.** The slug
+  encoding is lossy *and not injective* (`foo.bar` and `foo_bar` share one
+  directory), and a session's recorded `cwd` changes as the user moves around. The
+  current-project scope now filters sessions by recorded `cwd` — in scope when the
+  session worked at or below the project root — and reports what it excluded rather
+  than hiding it. Explicit `--project-dir` still takes the directory at face value.
+- **Non-positive character caps silently meant "unlimited."** `max_tool_chars`,
+  recall/bundle caps and `fit_packet` treated `<= 0` as no limit, so a zero from a
+  host or config defeated the documented 2,000-character hook boundary. Caps must
+  now be positive, with an explicit `None` as the only opt-out; a bad value in
+  `config.toml` fails loudly at load.
+- **Inline `image` / `document` / `fallback` content blocks were dropped.** They
+  are now preserved as typed attachment blocks carrying kind, media type, title and
+  decoded size — never the base64 payload, which routinely outweighs the transcript
+  itself. Unrecognised block types are preserved the same way instead of vanishing.
+- **`--include-attachments` was ignored by the `jsonl` and `plain` formats.**
+  Attachments now become their own record in every format (`role: "attachment"`).
+- **Codex multi-agent `agent_message` records were dropped**, losing the entire
+  root↔subagent conversation (38 such records in a real local archive, distinct
+  from the ordinary message stream). They now render with author/recipient
+  provenance; opaque `encrypted_content` parts are counted, not dumped.
+- `plain` output could still contain mnemosyne-generated markup: fences longer
+  than three backticks (which the renderer emits when content contains a fence)
+  and `<details>` wrappers are now stripped.
+- `syne drift --help` claimed a finding proves a memory is stale; it now matches
+  the README, MCP tool and plugin skill in calling it a review signal.
+- Parse current Codex custom-tool, tool-search, and web-search rollout records;
+  filter injected user-context blocks; and preserve attachment-only requests.
+- Keep topic-scoped self-alignment from returning unrelated Codex sessions or
+  handoffs when their cheap headers do not match the query.
+- Validate the Claude Code plugin manifest against the current schema
+  (`repository` is a URL string), and run mypy in CI/release gates.
+- Resolve drift references against the Codex archive and describe unresolved
+  references as review signals rather than proof that a whole memory is stale.
+- Write the shared `config.toml` registry atomically so interrupted saves cannot
+  leave a truncated registry.
+- Measure self-align budgets in the emitted format so the 2,000-character
+  resume/compact hook keeps recent-session context that fits in its Markdown.
+- Reject contradictory CLI scopes (`--project-dir` with `--all-projects`, or
+  `codex-list --cwd` with `--all`) instead of silently ignoring the narrower scope.
+- Keep the resume/compact hook quiet only when `syne` is absent; real recall
+  failures now surface instead of being swallowed by `|| true`.
+
+### Security
+- Upgrade the transitive `cryptography` floor to 50.0.0 (GHSA-g6cj-pr64-35w5 —
+  PKCS#7 `EnvelopedData` Bleichenbacher oracle). mnemosyne never calls the
+  affected API, but the vulnerable build no longer sits in the resolved graph.
+  `uv audit --locked` is now a CI and release gate.
+- Add a full-history secret-scanning job to CI. A credential-shaped PyPI token
+  was found loose in this repository's working tree; releases already use PyPI
+  Trusted Publishing (OIDC) and need no stored token.
+- Pin every GitHub Action to a full commit SHA (tags are mutable), align the two
+  workflows on the same versions, and pin the `uv` version explicitly.
+
+### Toolchain
+- `cyclopts` 5.0.0a7 → 5.0.0b1; MCP SDK → 2.x; `hatchling` floor-pinned so a
+  release build cannot resolve an older backend than was validated.
+- CI now exercises the full declared `requires-python` range (3.13 and 3.14)
+  rather than assuming 3.14 works; 3.14 added to the classifiers.
+
 ## [1.7.0] — 2026-07-15
 
 Policy hardening. The July intent-fidelity audit left five open product-policy

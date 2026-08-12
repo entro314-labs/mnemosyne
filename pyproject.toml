@@ -2,7 +2,7 @@
 # Import package and `syne` CLI are "mnemosyne"; the PyPI distribution name is
 # "mnemosyne-cc" because the bare "mnemosyne" name is taken by an unrelated project.
 name = "mnemosyne-cc"
-version = "1.7.0"
+version = "2.0.0"
 description = "Memory + context suite for Claude Code and Codex CLI: clean transcript exports (markdown/JSONL/plain), cross-session merge, cross-tool recall, memory drift checks, plus an MCP server and a Claude Code plugin."
 readme = "README.md"
 requires-python = ">=3.13"
@@ -29,6 +29,7 @@ classifiers = [
     "Operating System :: POSIX :: Linux",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Topic :: Software Development",
     "Topic :: Text Processing :: Markup :: Markdown",
     "Topic :: Utilities",
@@ -37,8 +38,8 @@ classifiers = [
 # (pydantic-core, starlette, uvicorn, idna, …) resolve automatically — pinning
 # them here previously forced an unsatisfiable pydantic-core/pydantic conflict.
 dependencies = [
-    "cyclopts==5.0.0a7",
-    "mcp>=2.0.0a2",
+    "cyclopts==5.0.0b1",
+    "mcp>=2.0.0",
     "rich>=15.0",
     "tomli-w>=1.2.0",
 ]
@@ -52,7 +53,9 @@ Issues = "https://github.com/entro314-labs/mnemosyne/issues"
 syne = "mnemosyne.cli:app"
 
 [build-system]
-requires = ["hatchling"]
+# Floor-pinned so a release build cannot silently resolve an older backend than
+# the one this project was validated against.
+requires = ["hatchling>=1.31.0"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
@@ -68,14 +71,20 @@ include = [
 ]
 
 [tool.uv]
-# cyclopts 5.x is currently published as an alpha; allow pre-releases without
+# cyclopts 5.x is currently published as a pre-release; allow pre-releases without
 # requiring --prerelease=allow on every invocation.
 prerelease = "allow"
+# Transitive-only security floor. cryptography arrives via mcp → pyjwt; 49.0.0 is
+# affected by GHSA-g6cj-pr64-35w5 (PKCS#7 EnvelopedData Bleichenbacher oracle),
+# fixed in 50.0.0. mnemosyne never calls the affected API, but the vulnerable
+# package must not sit in the resolved graph.
+constraint-dependencies = ["cryptography>=50.0.0"]
 
 [dependency-groups]
 dev = [
+    "mypy>=2.3.0",
     "pytest>=9.1.1",
-    "ruff>=0.15.21",
+    "ruff>=0.16.2",
 ]
 
 [tool.ruff]

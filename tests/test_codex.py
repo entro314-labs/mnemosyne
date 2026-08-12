@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any
 import pytest
 
 from mnemosyne.codex import (
+    _response_item_blocks,
     codex_available,
     codex_first_user_text,
     codex_memory_summary,
@@ -46,14 +47,19 @@ def _rollout_lines(sid: str, cwd: str) -> list[str]:
                 "cli_version": "1.0.0",
             },
         ),
-        # Injected environment wrapper — never conversational content.
+        # Current app rollouts group several injected blocks in one user message.
         _record(
             "response_item",
             {
                 "type": "message",
                 "role": "user",
                 "content": [
-                    {"type": "input_text", "text": "<environment_context>x</environment_context>"}
+                    {"type": "input_text", "text": "<recommended_plugins>x</recommended_plugins>"},
+                    {
+                        "type": "input_text",
+                        "text": "# AGENTS.md instructions\n<INSTRUCTIONS>x</INSTRUCTIONS>",
+                    },
+                    {"type": "input_text", "text": "<environment_context>x</environment_context>"},
                 ],
             },
         ),
@@ -94,6 +100,50 @@ def _rollout_lines(sid: str, cwd: str) -> list[str]:
         _record(
             "response_item",
             {"type": "function_call_output", "call_id": "call_1", "output": "1 passed"},
+        ),
+        _record(
+            "response_item",
+            {
+                "type": "custom_tool_call",
+                "name": "exec",
+                "input": "const result = await tools.exec_command({cmd: 'pwd'});",
+                "call_id": "call_2",
+            },
+        ),
+        _record(
+            "response_item",
+            {
+                "type": "custom_tool_call_output",
+                "call_id": "call_2",
+                "output": [
+                    {"type": "input_text", "text": "Script completed"},
+                    {"type": "input_text", "text": "/work/proj"},
+                ],
+            },
+        ),
+        _record(
+            "response_item",
+            {
+                "type": "tool_search_call",
+                "call_id": "call_3",
+                "arguments": {"query": "browser control", "limit": 5},
+            },
+        ),
+        _record(
+            "response_item",
+            {
+                "type": "tool_search_output",
+                "call_id": "call_3",
+                "tools": [{"type": "namespace", "name": "browser"}],
+            },
+        ),
+        _record(
+            "response_item",
+            {
+                "type": "web_search_call",
+                "status": "completed",
+                "action": {"type": "search", "query": "MCP documentation"},
+            },
         ),
         _record(
             "response_item",
@@ -186,23 +236,34 @@ def test_read_codex_session_event_mapping(codex_home: Path) -> None:
     events = read_codex_session(path)
     messages = [e for e in events if isinstance(e, Message)]
 
-    # env-context wrapper skipped; event_msg duplicate skipped.
+    # Injected user blocks skipped, IDE wrapper unwrapped, event_msg duplicate skipped.
     user_texts = [
         b.text for m in messages if m.role == "user" for b in m.blocks if isinstance(b, TextBlock)
     ]
     assert len(user_texts) == 1
-    assert "fix the login bug" in user_texts[0]
+    assert user_texts[0] == "fix the login bug"
 
     thinking = [b for m in messages for b in m.blocks if isinstance(b, ThinkingBlock)]
     assert [t.text for t in thinking] == ["Plan the fix"]  # encrypted reasoning dropped
 
     tool_uses = [b for m in messages for b in m.blocks if isinstance(b, ToolUseBlock)]
-    assert len(tool_uses) == 1
-    assert tool_uses[0].name == "exec_command"
+    assert [call.name for call in tool_uses] == [
+        "exec_command",
+        "exec",
+        "tool_search",
+        "web_search",
+    ]
     assert tool_uses[0].input == {"cmd": "pytest -q"}
+    assert "tools.exec_command" in tool_uses[1].input["arguments"]
+    assert tool_uses[2].input == {"query": "browser control", "limit": 5}
+    assert tool_uses[3].input == {"type": "search", "query": "MCP documentation"}
 
     results = [b for m in messages for b in m.blocks if isinstance(b, ToolResultBlock)]
-    assert [r.content for r in results] == ["1 passed"]
+    assert [r.content for r in results] == [
+        "1 passed",
+        "Script completed\n/work/proj",
+        '[{"type": "namespace", "name": "browser"}]',
+    ]
     assert results[0].tool_use_id == "call_1"
 
     # turn_context model stamps subsequent assistant messages.
@@ -263,6 +324,10 @@ def test_codex_memory_summary_caps(codex_home: Path, tmp_path: Path) -> None:
 
 def test_first_user_text_unwraps_ide_marker() -> None:
     assert codex_first_user_text("## My request for Codex:\n  do it  ") == "do it"
+    assert (
+        codex_first_user_text("# Files mentioned\nrequest.txt\n\n## My request for Codex:\n")
+        == "# Files mentioned\nrequest.txt"
+    )
     assert codex_first_user_text("plain prompt") == "plain prompt"
 
 
@@ -272,3 +337,50 @@ def test_summarize_codex_counts_malformed_lines(codex_home: Path) -> None:
         f.write("{broken record\n")
     s = summarize_codex_session(path)
     assert s.malformed_lines == 1
+
+
+# ---- multi-agent routing messages (F-05) ----
+
+
+def test_agent_message_is_preserved_with_provenance() -> None:
+    """`response_item`/`agent_message` carries root↔subagent traffic, not a duplicate."""
+    payload = {
+        "type": "agent_message",
+        "id": "amsg_1",
+        "author": "/root",
+        "recipient": "/root/assessment",
+        "content": [{"type": "input_text", "text": "Task name: /root/assessment"}],
+    }
+    mapped = _response_item_blocks(payload)
+    assert mapped is not None
+    role, blocks = mapped
+    assert role == "assistant"
+    block = blocks[0]
+    assert isinstance(block, TextBlock)
+    text = block.text
+    assert "/root" in text
+    assert "/root/assessment" in text
+    assert "Task name: /root/assessment" in text
+
+
+def test_agent_message_counts_encrypted_parts_instead_of_dumping_them() -> None:
+    payload = {
+        "type": "agent_message",
+        "author": "/root/a",
+        "recipient": "/root",
+        "content": [
+            {"type": "input_text", "text": "done"},
+            {"type": "encrypted_content", "encrypted_content": "gAAAAA" * 200},
+        ],
+    }
+    mapped = _response_item_blocks(payload)
+    assert mapped is not None
+    block = mapped[1][0]
+    assert isinstance(block, TextBlock)
+    text = block.text
+    assert "1 encrypted part" in text
+    assert "gAAAAA" not in text
+
+
+def test_agent_message_with_no_recoverable_content_is_skipped() -> None:
+    assert _response_item_blocks({"type": "agent_message", "content": []}) is None

@@ -17,6 +17,7 @@ import json
 from typing import TYPE_CHECKING, Any, Literal
 
 from mnemosyne import query
+from mnemosyne.render import validate_cap
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -38,8 +39,9 @@ def _ts(value: str | None) -> str:
     return (value or "").replace("T", " ").split(".")[0] or "-"
 
 
-def _cap(text: str, max_chars: int) -> str:
-    if max_chars <= 0 or len(text) <= max_chars:
+def _cap(text: str, max_chars: int | None) -> str:
+    """Cap `text`. ``None`` means unlimited; non-positive is rejected upstream."""
+    if max_chars is None or len(text) <= max_chars:
         return text
     marker = "\n… [truncated]"
     if max_chars <= len(marker):
@@ -47,7 +49,7 @@ def _cap(text: str, max_chars: int) -> str:
     return text[: max_chars - len(marker)].rstrip() + marker
 
 
-def _capped_json(payload: dict[str, Any], max_chars: int) -> str:
+def _capped_json(payload: dict[str, Any], max_chars: int | None) -> str:
     """Serialize a recall payload without ever cutting JSON syntax in half."""
 
     def render(value: dict[str, Any]) -> str:
@@ -56,7 +58,7 @@ def _capped_json(payload: dict[str, Any], max_chars: int) -> str:
     out = dict(payload)
     out["items"] = list(payload.get("items", []))
     text = render(out)
-    if max_chars <= 0 or len(text) <= max_chars:
+    if max_chars is None or len(text) <= max_chars:
         return text
     out["truncated"] = True
     while out["items"]:
@@ -200,21 +202,28 @@ def build_bundle(
     settings: Settings,
     *,
     query_str: str | None = None,
-    max_chars: int = 6000,
+    max_chars: int | None = 6000,
     fmt: RecallFormat = "markdown",
     include_codex: bool = True,
     codex_home: Path | None = None,
 ) -> str:
-    """Render the aggregated self-align packet (the one-call entry point), capped."""
+    """Render the aggregated self-align packet (the one-call entry point), capped.
+
+    ``max_chars`` must be positive, or ``None`` to opt out of the cap explicitly.
+    """
+    validate_cap(max_chars, "max_chars")
+    raw_packet = query.self_align(
+        dirs,
+        settings,
+        query=query_str,
+        include_codex=include_codex,
+        codex_home=codex_home,
+    )
+    size_fn = None if fmt == "json" else lambda value: len(_render_bundle(value))
     packet = query.fit_packet(
-        query.self_align(
-            dirs,
-            settings,
-            query=query_str,
-            include_codex=include_codex,
-            codex_home=codex_home,
-        ),
+        raw_packet,
         max_chars,
+        size_fn=size_fn,
     )
     if fmt == "json":
         return json.dumps(packet, ensure_ascii=False, separators=(",", ":"))
@@ -229,18 +238,20 @@ def build_recall(
     memories: bool = False,
     limit: int = 5,
     context_chars: int = 160,
-    max_chars: int = 4000,
+    max_chars: int | None = 4000,
     fmt: RecallFormat = "markdown",
 ) -> str:
     """Render a capped recall over ``dirs`` (the project dirs to consult).
 
     ``query_str`` set → search; otherwise recent sessions (or the memory index
-    when ``memories`` is set). Output is hard-capped at ``max_chars``.
+    when ``memories`` is set). Output is hard-capped at ``max_chars``, which must
+    be positive, or ``None`` to opt out of the cap explicitly.
     """
     if limit < 0:
         raise ValueError("limit must be non-negative")
     if context_chars < 0:
         raise ValueError("context_chars must be non-negative")
+    validate_cap(max_chars, "max_chars")
     kind, rows = _gather(
         dirs,
         settings,

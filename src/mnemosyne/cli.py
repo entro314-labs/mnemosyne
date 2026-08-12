@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
 from hashlib import sha256
 from pathlib import Path
@@ -121,19 +122,53 @@ err_console = Console(stderr=True, style="red")
 # ---- helpers ----
 
 
-def _resolve_project_dir(project_dir: Path | None) -> Path:
+@dataclass(frozen=True, slots=True)
+class ProjectScope:
+    """An archive directory plus the working tree that authoritatively defines it.
+
+    ``path`` is the recorded-``cwd`` filter. It is set when the archive was found
+    from the current working directory (the documented default scope), and ``None``
+    when the user named a directory with ``--project-dir`` — naming a directory is
+    explicit selection, so it is taken at face value.
+    """
+
+    dir: Path
+    path: Path | None
+
+    def session_files(self) -> list[Path]:
+        return list_session_files(self.dir, project_path=self.path)
+
+    def excluded_count(self) -> int:
+        """Sessions in the directory that belong to a different working tree."""
+        if self.path is None:
+            return 0
+        return len(list_session_files(self.dir)) - len(self.session_files())
+
+
+def _warn_if_foreign_sessions(scope: ProjectScope) -> None:
+    """Surface slug-collision filtering instead of hiding it (source-integrity rule)."""
+    n = scope.excluded_count()
+    if n:
+        err_console.print(
+            f"[dim]note: {n} session(s) in {scope.dir.name} belong to a different "
+            f"working tree and were excluded; use --project-dir to include them.[/dim]"
+        )
+
+
+def _resolve_project_dir(project_dir: Path | None) -> ProjectScope:
     if project_dir is not None:
         if not project_dir.is_dir():
             raise SystemExit(f"error: project directory not found: {project_dir}")
-        return project_dir
-    candidate = project_dir_for_cwd(Path.cwd())
+        return ProjectScope(dir=project_dir, path=None)
+    cwd = Path.cwd()
+    candidate = project_dir_for_cwd(cwd)
     if not candidate.is_dir():
         raise SystemExit(
-            f"error: no Claude Code project found for cwd ({Path.cwd()}).\n"
+            f"error: no Claude Code project found for cwd ({cwd}).\n"
             f"  expected: {candidate}\n"
             f"  pass --project-dir explicitly or run from a project's working directory."
         )
-    return candidate
+    return ProjectScope(dir=candidate, path=cwd)
 
 
 def _resolve_session(project_dir: Path, session_id: str) -> Path:
@@ -304,7 +339,13 @@ def _write_export(
     if write_sidecar:
         _write_session_sidecar(s, out_path, opts, fmt=fmt, project_slug=project_slug)
     _maybe_write_session_artifacts(
-        s, out_dir, out_path.stem, opts, selection, project_dir, artifact_tally
+        s,
+        out_dir,
+        out_path.stem,
+        opts=opts,
+        selection=selection,
+        project_dir=project_dir,
+        tally=artifact_tally,
     )
     return out_path
 
@@ -313,6 +354,7 @@ def _maybe_write_session_artifacts(
     s: SessionSummary,
     out_dir: Path,
     base: str,
+    *,
     opts: RenderOptions,
     selection: ArtifactSelection | None,
     project_dir: Path | None,
@@ -578,7 +620,10 @@ def _render_session_table(summaries: list[SessionSummary]) -> None:
 
 
 @app.default
-def interactive(
+# Cyclopts binds POSITIONAL_OR_KEYWORD parameters to CLI positional args, so this
+# signature IS the command's public interface — `*` here would silently break
+# existing invocations. Suppressed per-command rather than globally.
+def interactive(  # noqa: PLR0917
     mode: Annotated[
         Mode | None,
         Parameter(help="Override the saved mode default."),
@@ -700,8 +745,10 @@ def list_cmd(
     ] = None,
 ) -> None:
     """List sessions in a Claude Code project directory."""
-    pd = _resolve_project_dir(project_dir)
-    files = list_session_files(pd)
+    scope = _resolve_project_dir(project_dir)
+    pd = scope.dir
+    files = scope.session_files()
+    _warn_if_foreign_sessions(scope)
     if not files:
         err_console.print(f"No .jsonl sessions in {pd}")
         return
@@ -741,7 +788,10 @@ def list_cmd(
 
 
 @app.command
-def export(
+# Cyclopts binds POSITIONAL_OR_KEYWORD parameters to CLI positional args, so this
+# signature IS the command's public interface — `*` here would silently break
+# existing invocations. Suppressed per-command rather than globally.
+def export(  # noqa: PLR0917
     session_id: str,
     /,
     project_dir: Annotated[Path | None, Parameter(name=["--project-dir", "-p"])] = None,
@@ -771,7 +821,7 @@ def export(
 ) -> None:
     """Export a single session (by full UUID or unique prefix) to disk."""
     settings = load_settings()
-    pd = _resolve_project_dir(project_dir)
+    pd = _resolve_project_dir(project_dir).dir
     path = _resolve_session(pd, session_id)
     summary = summarize_session(path)
     selection = _selection_from(
@@ -815,7 +865,13 @@ def export(
         if sidecar:
             _write_session_sidecar(summary, output, opts, fmt=fmt, project_slug=pd.name)
         _maybe_write_session_artifacts(
-            summary, output.parent, output.stem, opts, selection, pd, tally
+            summary,
+            output.parent,
+            output.stem,
+            opts=opts,
+            selection=selection,
+            project_dir=pd,
+            tally=tally,
         )
         memory_out = output.parent
     else:  # directory
@@ -844,7 +900,10 @@ def export(
 
 
 @app.command(name="export-all")
-def export_all(
+# Cyclopts binds POSITIONAL_OR_KEYWORD parameters to CLI positional args, so this
+# signature IS the command's public interface — `*` here would silently break
+# existing invocations. Suppressed per-command rather than globally.
+def export_all(  # noqa: PLR0917
     project_dir: Annotated[Path | None, Parameter(name=["--project-dir", "-p"])] = None,
     output: Annotated[
         Path | None,
@@ -894,6 +953,8 @@ def export_all(
     full: FullArtifactsFlag = False,
 ) -> None:
     """Export every session in a project directory (with optional filters)."""
+    if all_projects and project_dir is not None:
+        raise SystemExit("error: --project-dir and --all-projects are mutually exclusive.")
     settings = load_settings()
     sync_registry(settings)
     selection = _selection_from(
@@ -925,8 +986,10 @@ def export_all(
         )
         return
 
-    pd = _resolve_project_dir(project_dir)
-    files = list_session_files(pd)
+    scope = _resolve_project_dir(project_dir)
+    pd = scope.dir
+    files = scope.session_files()
+    _warn_if_foreign_sessions(scope)
     if not files:
         err_console.print(f"No .jsonl sessions in {pd}")
         return
@@ -1176,7 +1239,10 @@ def _parse_session_timestamp(value: str) -> datetime | None:
 
 
 @app.command
-def merge(
+# Cyclopts binds POSITIONAL_OR_KEYWORD parameters to CLI positional args, so this
+# signature IS the command's public interface — `*` here would silently break
+# existing invocations. Suppressed per-command rather than globally.
+def merge(  # noqa: PLR0917
     session_ids: Annotated[
         list[str] | None,
         Parameter(
@@ -1275,7 +1341,7 @@ def merge(
         targets = [(s, pd) for s in filtered]
     else:
         assert session_ids is not None
-        pd = _resolve_project_dir(project_dir)
+        pd = _resolve_project_dir(project_dir).dir
         summaries = [summarize_session(_resolve_session(pd, sid)) for sid in session_ids]
         filtered = _apply_filters(summaries, since=since, until=until, matching=matching)
         targets = [(s, pd) for s in filtered]
@@ -1455,7 +1521,10 @@ def _merge_sidecar_payload(
 
 
 @app.command
-def recall(
+# Cyclopts binds POSITIONAL_OR_KEYWORD parameters to CLI positional args, so this
+# signature IS the command's public interface — `*` here would silently break
+# existing invocations. Suppressed per-command rather than globally.
+def recall(  # noqa: PLR0917
     query: Annotated[
         str | None,
         Parameter(
@@ -1520,6 +1589,8 @@ def recall(
     non-MCP agent told to shell out to `syne`: headers-first, project-scoped,
     never a full transcript. `--recent` is implied when no query and no --memories.
     """
+    if all_projects and project_dir is not None:
+        raise SystemExit("error: --project-dir and --all-projects are mutually exclusive.")
     _ = recent  # recent is the default; the flag exists for explicitness
     settings = load_settings()
     if all_projects:
@@ -1557,7 +1628,10 @@ def recall(
 
 
 @app.command
-def align(
+# Cyclopts binds POSITIONAL_OR_KEYWORD parameters to CLI positional args, so this
+# signature IS the command's public interface — `*` here would silently break
+# existing invocations. Suppressed per-command rather than globally.
+def align(  # noqa: PLR0917
     path: Annotated[
         Path | None,
         Parameter(help="Project root holding CLAUDE.md / AGENTS.md (default: cwd)."),
@@ -1642,9 +1716,11 @@ def drift(
     """Mechanically verify curated memories against the live repository.
 
     Checks every memory's cited file paths, `path:line` anchors, and `[[links]]`
-    against the working tree. Deterministic: a finding means the memory's claims
-    no longer hold and it is stale until re-verified. The computed counterpart of
-    the directive's "treat recall as dated evidence" rule.
+    against the working tree. Deterministic, but a finding is a *review signal*,
+    not proof: an unresolved reference means the citation no longer resolves —
+    the memory's underlying claim may still hold (the file may have moved or been
+    renamed). The computed counterpart of the directive's "treat recall as dated
+    evidence" rule.
     """
     root = (path or Path.cwd()).resolve()
     project_dir = project_dir_for_cwd(root)
@@ -1675,6 +1751,8 @@ def codex_list(
     Reads `~/.codex/sessions` first-line headers plus the thread-name index —
     cheap even on large archives. Use `syne codex-export` to render one.
     """
+    if all_sessions and cwd is not None:
+        raise SystemExit("error: --cwd and --all are mutually exclusive.")
     if not codex_store.codex_available():
         err_console.print(f"No Codex archive found at {codex_store.CODEX_HOME}")
         return

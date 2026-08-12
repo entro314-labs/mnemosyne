@@ -24,10 +24,10 @@ from mnemosyne.parser import (
     read_session,
     summarize_session,
 )
-from mnemosyne.render import RenderOptions, render_markdown
+from mnemosyne.render import RenderOptions, render_markdown, validate_cap
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
+    from collections.abc import Callable, Iterable
 
     from mnemosyne.config import ProjectEntry, Settings
     from mnemosyne.parser import SessionSummary
@@ -59,6 +59,26 @@ def session_summary_dict(s: SessionSummary, entry: ProjectEntry | None = None) -
     }
 
 
+def scoped_session_files(project_dir: Path, settings: Settings) -> list[Path]:
+    """Session files for a project, narrowed to its registered working tree.
+
+    The slug encoding is not injective (``foo.bar`` and ``foo_bar`` both flatten to
+    ``foo-bar``), so one archive directory can hold sessions from unrelated trees.
+    The registry records the authoritative ``local_path``; when it is known,
+    sessions that never worked in that tree are excluded.
+
+    Falls back to the unfiltered list when the registry has no path for the slug,
+    or when filtering would empty a non-empty directory — a stale ``local_path``
+    must not make a real archive look like it has no sessions.
+    """
+    files = list_session_files(project_dir)
+    entry = settings.projects.get(project_dir.name)
+    if entry is None or not entry.local_path:
+        return files
+    scoped = list_session_files(project_dir, project_path=Path(entry.local_path))
+    return scoped if scoped else files
+
+
 def recent_sessions(
     project_dir: Path,
     limit: int,
@@ -69,7 +89,7 @@ def recent_sessions(
         raise ValueError("limit must be non-negative")
     entry = settings.projects.get(project_dir.name)
     summaries = sorted(
-        (summarize_session(p) for p in list_session_files(project_dir)),
+        (summarize_session(p) for p in scoped_session_files(project_dir, settings)),
         key=lambda s: s.last_timestamp or "",
         reverse=True,
     )
@@ -176,7 +196,7 @@ def search_sessions(
     hits: list[dict[str, Any]] = []
     for pd in project_dirs:
         entry = settings.projects.get(pd.name)
-        for jsonl in sorted(pd.glob("*.jsonl")):
+        for jsonl in scoped_session_files(pd, settings):
             events = read_session(jsonl)
             text = render_markdown(events, opts=opts)
             idx = text.lower().find(needle)
@@ -257,9 +277,9 @@ def _codex_context(
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Codex rollouts + handoff digests for the same working trees, as cheap headers.
 
-    Discovery is first-line-only per rollout file. When a ``query`` is given the
-    session list is filtered by title/prompt match (headers only — transcript
-    content search stays a pull-on-demand step to keep this bounded and fast).
+    Discovery is first-line-only per rollout file. When a ``query`` is given,
+    session and handoff rows are filtered by their cheap title/filename headers;
+    transcript/body search stays pull-on-demand to keep this bounded and fast.
     """
     if not local_paths or not codex.codex_available(codex_home):
         return [], []
@@ -290,8 +310,12 @@ def _codex_context(
             )
     if query:
         needle = query.lower()
-        matched = [s for s in sessions if needle in (s.get("title") or "").lower()]
-        sessions = matched or sessions
+        sessions = [s for s in sessions if needle in (s.get("title") or "").lower()]
+        summaries = [
+            s
+            for s in summaries
+            if needle in f"{s.get('title') or ''}\n{s.get('file') or ''}".lower()
+        ]
     sessions.sort(key=lambda s: s.get("timestamp") or "", reverse=True)
     return sessions[:session_limit], summaries[:summary_limit]
 
@@ -400,17 +424,27 @@ def self_align(
     }
 
 
-def fit_packet(packet: dict[str, Any], max_chars: int) -> dict[str, Any]:
+def fit_packet(
+    packet: dict[str, Any],
+    max_chars: int | None,
+    *,
+    size_fn: Callable[[dict[str, Any]], int] | None = None,
+) -> dict[str, Any]:
     """Trim a self_align packet so its JSON stays under ``max_chars``.
 
     Drops the most expendable rows first (transcript hits → recent → memories),
-    keeping at least the top memory match and the guidance/suggestions.
+    keeping at least the top memory match and the guidance/suggestions. By
+    default size is measured as compact JSON; callers emitting another format
+    can pass its rendered-size function so rows that actually fit are retained.
+
+    ``max_chars`` must be positive, or ``None`` to skip trimming entirely.
     """
-    if max_chars <= 0:
+    validate_cap(max_chars, "max_chars")
+    if max_chars is None:
         return packet
 
     def size(p: dict[str, Any]) -> int:
-        return len(json.dumps(p, ensure_ascii=False))
+        return size_fn(p) if size_fn is not None else len(json.dumps(p, ensure_ascii=False))
 
     out = dict(packet)
     out["memories"] = list(packet.get("memories", []))

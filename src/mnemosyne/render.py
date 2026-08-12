@@ -26,6 +26,7 @@ from mnemosyne.clean import (
 )
 from mnemosyne.parser import (
     Attachment,
+    AttachmentBlock,
     Message,
     TextBlock,
     ThinkingBlock,
@@ -46,12 +47,39 @@ Mode = Literal["transcript", "compact", "full"]
 
 @dataclass(slots=True)
 class RenderOptions:
+    """Rendering knobs. Character caps are hard safety boundaries.
+
+    A cap must be a positive count or an explicit ``None`` meaning "no limit".
+    Zero and negative values are rejected rather than silently treated as
+    unlimited, so a mis-supplied host value cannot defeat the boundary.
+    """
+
     mode: Mode = "transcript"
     include_thinking: bool = False
     include_attachments: bool = False
     include_reminders: bool = False
-    max_tool_result_chars: int = 2000
-    max_tool_input_chars: int = 2000
+    max_tool_result_chars: int | None = 2000
+    max_tool_input_chars: int | None = 2000
+
+    def __post_init__(self) -> None:
+        validate_cap(self.max_tool_result_chars, "max_tool_result_chars")
+        validate_cap(self.max_tool_input_chars, "max_tool_input_chars")
+
+
+def validate_cap(value: int | None, name: str) -> int | None:
+    """Return ``value`` if it is a valid character cap, else raise.
+
+    ``None`` means "unlimited" and is the only way to disable a cap. Any
+    non-positive integer is a caller error: treating it as unlimited would turn a
+    documented hard limit into an unbounded write.
+    """
+    if value is None:
+        return None
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise ValueError(f"{name} must be a positive integer or None, got {value!r}")
+    if value <= 0:
+        raise ValueError(f"{name} must be a positive integer or None, got {value}")
+    return value
 
 
 _NOISY_ATTACHMENTS = frozenset(
@@ -102,8 +130,9 @@ def _clean_result(content: str) -> str:
     return scrub_tool_output(_scrub_ack(content))
 
 
-def _truncate(text: str, limit: int) -> str:
-    if limit <= 0 or len(text) <= limit:
+def _truncate(text: str, limit: int | None) -> str:
+    """Cut `text` to `limit` characters. ``None`` means no limit (explicit opt-out)."""
+    if limit is None or len(text) <= limit:
         return text
     return text[:limit] + f"\n… [truncated {len(text) - limit} chars]"
 
@@ -260,7 +289,42 @@ def _message_parts(  # noqa: PLR0912
                 rendered_block = _render_full_tool_result(b, opts)
                 if rendered_block:
                     parts.append(rendered_block)
+
+            case AttachmentBlock():
+                if opts.include_attachments:
+                    parts.append(_render_attachment_block(b))
     return parts
+
+
+def _human_bytes(n: int) -> str:
+    if n < 1024:
+        return f"{n} B"
+    if n < 1024 * 1024:
+        return f"{n / 1024:.0f} KB"
+    return f"{n / (1024 * 1024):.1f} MB"
+
+
+_ATTACHMENT_ICONS = {"image": "🖼️", "document": "📎", "fallback": "🔁"}
+
+
+def _render_attachment_block(b: AttachmentBlock) -> str:
+    """One line describing an inline attachment — never the payload itself."""
+    icon = _ATTACHMENT_ICONS.get(b.kind, "📦")
+    bits: list[str] = []
+    if b.title:
+        bits.append(b.title)
+    if b.media_type:
+        bits.append(b.media_type)
+    if b.byte_size is not None:
+        bits.append(_human_bytes(b.byte_size))
+    for key, value in sorted(b.detail.items()):
+        if isinstance(value, dict):
+            inner = ", ".join(f"{k}={v}" for k, v in sorted(value.items()))
+            bits.append(f"{key}: {inner}")
+        else:
+            bits.append(f"{key}: {value}")
+    suffix = f" — {' · '.join(bits)}" if bits else ""
+    return f"{icon} **{b.kind}**{suffix}"
 
 
 def _is_tool_result_only_user(msg: Message) -> bool:
@@ -299,7 +363,7 @@ def _render_message(
 class Turn:
     """A coalesced conversational turn, ready for any output format."""
 
-    role: str  # "user" | "assistant"
+    role: str  # "user" | "assistant" | "attachment"
     timestamp: str | None
     body: str  # rendered paragraphs joined by blank lines; mode-aware
 
@@ -314,8 +378,9 @@ def collect_turns(
     - Tool-result-only user messages (parallel fan-in) attach to the previous
       turn's body rather than creating a new turn.
     - Adjacent same-role turns merge into one (matching the markdown coalescer).
-    - Attachments are skipped here; they have no role and are rendered as
-      separate markdown chunks only.
+    - Top-level attachments become their own ``role="attachment"`` turn when
+      ``opts.include_attachments`` is set, so every format honours the flag. They
+      never merge into a neighbouring turn.
     """
     opts = opts or RenderOptions()
     events_list = list(events)
@@ -324,6 +389,17 @@ def collect_turns(
     turns: list[Turn] = []
 
     for ev in events_list:
+        if isinstance(ev, Attachment):
+            rendered = _render_attachment(ev, opts)
+            if rendered:
+                turns.append(
+                    Turn(
+                        role="attachment",
+                        timestamp=ev.timestamp,
+                        body=normalize_whitespace(rendered),
+                    )
+                )
+            continue
         if not isinstance(ev, Message):
             continue
         parts = _message_parts(

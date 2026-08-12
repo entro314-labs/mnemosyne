@@ -107,6 +107,18 @@ def test_archive_relative_refs_resolve(tmp_path: Path) -> None:
     assert report["findings"] == []
 
 
+def test_codex_archive_refs_resolve(tmp_path: Path) -> None:
+    archive, root = _project(
+        tmp_path,
+        {"codex-memory": "Titles come from `session_index.jsonl`."},
+    )
+    codex_home = tmp_path / ".codex"
+    codex_home.mkdir()
+    (codex_home / "session_index.jsonl").write_text("{}\n", encoding="utf-8")
+    report = check_drift(archive, root, codex_home=codex_home)
+    assert report["findings"] == []
+
+
 def test_vendor_trees_pruned_from_index(tmp_path: Path) -> None:
     archive, root = _project(
         tmp_path,
@@ -142,7 +154,7 @@ def test_render_drift_markdown_lists_findings(tmp_path: Path) -> None:
     out = render_drift_markdown(check_drift(archive, root))
     assert "stale-memory" in out
     assert "src/missing.ts" in out
-    assert "stale until re-verified" in out
+    assert "deterministic review signal" in out
 
 
 def test_absolute_refs_checked_as_is(tmp_path: Path) -> None:

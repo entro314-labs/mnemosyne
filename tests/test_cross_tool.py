@@ -114,6 +114,14 @@ def test_self_align_query_filters_codex_titles(tmp_path: Path) -> None:
     pd, settings, home = _fixture(tmp_path)
     packet = self_align([pd], settings, query="auth", codex_home=home)
     assert [c["session_id"] for c in packet["codex_sessions"]] == [SID]
+    assert [s["title"] for s in packet["codex_summaries"]] == ["Ported the auth flow"]
+
+
+def test_self_align_query_does_not_fall_back_to_unrelated_codex_rows(tmp_path: Path) -> None:
+    pd, settings, home = _fixture(tmp_path)
+    packet = self_align([pd], settings, query="not-present", codex_home=home)
+    assert packet["codex_sessions"] == []
+    assert packet["codex_summaries"] == []
 
 
 def test_fit_packet_trims_codex_rows_and_suggestions(tmp_path: Path) -> None:

@@ -311,3 +311,17 @@ def test_all_projects_exports_project_memories_even_when_session_filter_is_empty
 
     assert (output / "project" / "memory" / "decision.md").is_file()
     assert not (output / "project" / "index.json").exists()
+
+
+def test_cross_project_flags_reject_an_explicit_project_scope(tmp_path: Path) -> None:
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    with pytest.raises(SystemExit, match="mutually exclusive"):
+        cli.export_all(project_dir=project_dir, all_projects=True)
+    with pytest.raises(SystemExit, match="mutually exclusive"):
+        cli.recall(project_dir=project_dir, all_projects=True)
+
+
+def test_codex_all_rejects_an_explicit_cwd(tmp_path: Path) -> None:
+    with pytest.raises(SystemExit, match="mutually exclusive"):
+        cli.codex_list(cwd=tmp_path, all_sessions=True)

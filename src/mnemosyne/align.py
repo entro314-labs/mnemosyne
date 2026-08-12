@@ -179,12 +179,29 @@ def is_available(local_path: Path, *, claude_home: Path | None = None) -> bool:
     (``--force`` still overrides, e.g. to pre-wire a brand-new project).
     """
     home = claude_home or (Path.home() / ".claude")
-    if (local_path / ".mnemosyne-exports").is_dir():
+    if _has_export_artifacts(local_path / ".mnemosyne-exports"):
         return True
     slug_dir = project_dir_for_cwd(local_path, claude_home=home / "projects")
     if slug_dir.is_dir() and any(slug_dir.glob("*.jsonl")):
         return True
     return any(iter_memory_files(slug_dir))
+
+
+# Rendered transcripts (.md/.txt/.jsonl), sidecars and indexes (.json/.md).
+_EXPORT_ARTIFACT_SUFFIXES = frozenset({".md", ".txt", ".jsonl", ".json"})
+
+
+def _has_export_artifacts(export_dir: Path) -> bool:
+    """True when an export directory holds at least one real artifact.
+
+    ``export-all`` creates the output directory before filtering, so an empty
+    ``.mnemosyne-exports`` can outlive a run that wrote nothing. Treating the bare
+    directory as proof of a searchable archive makes the directive claim something
+    false, so require actual content.
+    """
+    if not export_dir.is_dir():
+        return False
+    return any(p.is_file() and p.suffix in _EXPORT_ARTIFACT_SUFFIXES for p in export_dir.rglob("*"))
 
 
 def files_with_region(roots: Iterable[Path]) -> list[Path]:

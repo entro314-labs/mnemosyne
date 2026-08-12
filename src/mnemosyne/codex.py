@@ -7,12 +7,10 @@ Codex CLI stores each session ("rollout") as JSONL under
 - ``session_meta``   — first line: ``{id, cwd, originator, cli_version, …}``.
   The ``cwd`` field is what lets us associate a rollout with a local project —
   Codex has no per-project directories, so discovery scans first lines only.
-- ``response_item``  — the conversation. ``payload.type`` is one of ``message``
+- ``response_item``  — the conversation. ``payload.type`` includes ``message``
   (role user/assistant with ``content: [{type: input_text|output_text, text}]``),
-  ``reasoning`` (usually ``encrypted_content`` with an empty ``summary`` — only a
-  non-empty summary is readable), ``function_call`` (``name`` + JSON-string
-  ``arguments`` + ``call_id``), and ``function_call_output`` (``call_id`` +
-  ``output``).
+  readable ``reasoning`` summaries, function/custom tool call pairs, tool-search
+  call pairs, and standalone web-search calls.
 - ``event_msg``      — the UI event stream (``user_message`` / ``agent_message``
   / ``token_count`` …). It duplicates ``response_item`` content, so it is skipped.
 - ``turn_context``   — per-turn model/effort; used to stamp assistant messages.
@@ -60,8 +58,16 @@ CODEX_HOME = Path.home() / ".codex"
 _ROLLOUT_ID_RE = re.compile(
     r"rollout-.*-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$"
 )
-# Codex-injected wrappers that are never conversational content.
-_NOISE_PREFIXES = ("<environment_context>", "<user_instructions>", "<ENVIRONMENT_CONTEXT>")
+# Codex-injected user blocks that are never conversational content. Current app
+# rollouts can put several of these blocks in one message, so filtering happens
+# per content block rather than only against the joined message prefix.
+_NOISE_PREFIXES = (
+    "<environment_context>",
+    "<user_instructions>",
+    "<recommended_plugins>",
+    "<apps_instructions>",
+    "<plugins_instructions>",
+)
 # The IDE-context wrapper keeps the real prompt under this heading.
 _IDE_REQUEST_MARKER = "## My request for Codex:"
 
@@ -239,21 +245,29 @@ def resolve_codex_session(
 
 
 def _is_noise_user_text(text: str) -> bool:
-    return text.lstrip().startswith(_NOISE_PREFIXES)
+    stripped = text.lstrip().lower()
+    if stripped.startswith(_NOISE_PREFIXES):
+        return True
+    return stripped.startswith("# agents.md instructions") and "<instructions>" in stripped
 
 
-def _message_text(payload: dict[str, Any]) -> str:
-    """Join the text parts of a ``response_item``/``message`` payload."""
+def _message_text(payload: dict[str, Any], *, user: bool = False) -> str:
+    """Join a message's text blocks, dropping Codex-injected user context blocks."""
     content = payload.get("content")
     if isinstance(content, str):
-        return content
+        text = "" if user and _is_noise_user_text(content) else content
+        return codex_first_user_text(text) if user else text
     if not isinstance(content, list):
         return ""
     parts: list[str] = []
     for item in content:
         if isinstance(item, dict) and item.get("type") in {"input_text", "output_text", "text"}:
-            parts.append(str(item.get("text", "")))
-    return "\n".join(p for p in parts if p)
+            text = str(item.get("text", ""))
+            if user and _is_noise_user_text(text):
+                continue
+            parts.append(text)
+    text = "\n".join(p for p in parts if p)
+    return codex_first_user_text(text) if user else text
 
 
 def _reasoning_text(payload: dict[str, Any]) -> str:
@@ -267,6 +281,39 @@ def _reasoning_text(payload: dict[str, Any]) -> str:
         if isinstance(item, dict) and item.get("type") == "summary_text"
     ]
     return "\n\n".join(p for p in parts if p.strip())
+
+
+def _agent_message_text(payload: dict[str, Any]) -> str:
+    """Render a Codex multi-agent routing message, provenance first.
+
+    ``agent_message`` records carry the dispatch/report traffic between the root
+    agent and its subagents (``/root`` ↔ ``/root/<task>``). They are distinct
+    content, not a duplicate of the ordinary ``message`` stream, so dropping them
+    loses the entire subagent conversation.
+
+    Parts are often accompanied by ``encrypted_content``, which is opaque to us.
+    Those are counted rather than dumped — a base64 blob is noise, but silently
+    omitting it would hide that the record was only partly recoverable.
+    """
+    author = str(payload.get("author") or "?")
+    recipient = str(payload.get("recipient") or "?")
+    texts: list[str] = []
+    encrypted = 0
+    for part in payload.get("content") or []:
+        if not isinstance(part, dict):
+            continue
+        if part.get("type") == "encrypted_content":
+            encrypted += 1
+        elif isinstance(part.get("text"), str):
+            texts.append(part["text"])
+    body = "\n".join(t for t in texts if t.strip())
+    if not body and not encrypted:
+        return ""
+    header = f"**🔀 Agent message: `{author}` → `{recipient}`**"
+    if encrypted:
+        suffix = "s" if encrypted != 1 else ""
+        header += f" _({encrypted} encrypted part{suffix} omitted)_"
+    return f"{header}\n\n{body}" if body else header
 
 
 def _tool_input(arguments: Any) -> dict[str, Any]:
@@ -287,6 +334,15 @@ def _tool_input(arguments: Any) -> dict[str, Any]:
 def _tool_output(output: Any) -> str:
     if isinstance(output, str):
         return output
+    if isinstance(output, list):
+        text_parts = [
+            str(item.get("text", ""))
+            for item in output
+            if isinstance(item, dict) and isinstance(item.get("text"), str)
+        ]
+        if text_parts:
+            return "\n".join(part for part in text_parts if part)
+        return json.dumps(output, ensure_ascii=False, default=str)
     if isinstance(output, dict):
         inner = output.get("output")
         if isinstance(inner, str):
@@ -297,34 +353,55 @@ def _tool_output(output: Any) -> str:
 
 def _response_item_blocks(payload: dict[str, Any]) -> tuple[str, list[Block]] | None:
     """Map one ``response_item`` payload to a (role, blocks) pair, or None to skip."""
+    mapped: tuple[str, list[Block]] | None
     match payload.get("type"):
         case "message":
             role = str(payload.get("role", ""))
-            text = _message_text(payload)
-            skip = (
-                role not in {"user", "assistant"}
-                or not text.strip()
-                or (role == "user" and _is_noise_user_text(text))
-            )
-            return None if skip else (role, [TextBlock(text=text)])
+            text = _message_text(payload, user=role == "user")
+            skip = role not in {"user", "assistant"} or not text.strip()
+            mapped = None if skip else (role, [TextBlock(text=text)])
         case "reasoning":
             text = _reasoning_text(payload)
-            return ("assistant", [ThinkingBlock(text=text)]) if text else None
-        case "function_call":
+            mapped = ("assistant", [ThinkingBlock(text=text)]) if text else None
+        case "function_call" | "custom_tool_call":
             block = ToolUseBlock(
                 id=str(payload.get("call_id", "")),
                 name=str(payload.get("name", "?")),
-                input=_tool_input(payload.get("arguments")),
+                input=_tool_input(payload.get("arguments", payload.get("input"))),
             )
-            return "assistant", [block]
-        case "function_call_output":
+            mapped = "assistant", [block]
+        case "function_call_output" | "custom_tool_call_output":
             result = ToolResultBlock(
                 tool_use_id=str(payload.get("call_id", "")),
                 content=_tool_output(payload.get("output")),
             )
-            return "user", [result]
+            mapped = "user", [result]
+        case "tool_search_call":
+            block = ToolUseBlock(
+                id=str(payload.get("call_id", "")),
+                name="tool_search",
+                input=_tool_input(payload.get("arguments")),
+            )
+            mapped = "assistant", [block]
+        case "tool_search_output":
+            result = ToolResultBlock(
+                tool_use_id=str(payload.get("call_id", "")),
+                content=_tool_output(payload.get("tools")),
+            )
+            mapped = "user", [result]
+        case "web_search_call":
+            block = ToolUseBlock(
+                id=str(payload.get("call_id") or payload.get("id") or ""),
+                name="web_search",
+                input=_tool_input(payload.get("action")),
+            )
+            mapped = "assistant", [block]
+        case "agent_message":
+            text = _agent_message_text(payload)
+            mapped = ("assistant", [TextBlock(text=text)]) if text else None
         case _:
-            return None
+            mapped = None
+    return mapped
 
 
 def read_codex_session(path: Path) -> list[Event]:
@@ -369,7 +446,10 @@ def read_codex_session(path: Path) -> list[Event]:
 def codex_first_user_text(text: str) -> str:
     """The real prompt inside Codex's IDE-context wrapper (or the text itself)."""
     if _IDE_REQUEST_MARKER in text:
-        return text.split(_IDE_REQUEST_MARKER, 1)[1].strip()
+        wrapper, request = text.split(_IDE_REQUEST_MARKER, 1)
+        # Attachment-only requests can legitimately leave the marker body empty;
+        # retain the file/context section instead of erasing the user's whole ask.
+        return request.strip() or wrapper.strip()
     return text.strip()
 
 
@@ -406,10 +486,8 @@ def summarize_codex_session(
         role = payload.get("role")
         if role not in {"user", "assistant"}:
             continue
-        text = _message_text(payload)
+        text = _message_text(payload, user=role == "user")
         if not text.strip():
-            continue
-        if role == "user" and _is_noise_user_text(text):
             continue
         ts = obj.get("timestamp")
         if ts:

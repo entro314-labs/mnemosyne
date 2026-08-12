@@ -13,6 +13,12 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# Actions are pinned to full commit SHAs: a tag is mutable and can be repointed
+# at new code, a commit SHA cannot. The trailing comment records the human
+# version so upgrades stay reviewable.
+env:
+  UV_VERSION: "0.12.3"
+
 jobs:
   ci:
     runs-on: ${{ matrix.os }}
@@ -20,19 +26,25 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
+        # 3.13 is the supported baseline; 3.14 is exercised so the declared
+        # requires-python range is actually tested rather than assumed.
+        python-version: ["3.13", "3.14"]
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v8.2.0
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
         with:
+          version: ${{ env.UV_VERSION }}
           enable-cache: true
+          # v9 changed the default; state it so cache behaviour is not implicit.
+          prune-cache: true
 
       - name: Pin Python
-        run: uv python install 3.13
+        run: uv python install ${{ matrix.python-version }}
 
       - name: Sync dependencies
-        run: uv sync --all-groups
+        run: uv sync --all-groups --python ${{ matrix.python-version }}
 
       - name: Ruff (lint)
         run: uv run ruff check src tests
@@ -40,8 +52,28 @@ jobs:
       - name: Ruff (format)
         run: uv run ruff format --check src tests
 
+      - name: Mypy
+        run: uv run mypy src tests
+
       - name: Pytest
         run: uv run pytest -q
 
+      - name: Audit locked dependencies
+        run: uv audit --locked
+
       - name: Smoke-test CLI
         run: uv run syne --help
+
+  secrets:
+    # A credential-shaped PyPI token was found loose in this repo's working tree;
+    # this gate exists so a future one cannot reach history unnoticed.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # full history — a secret in an old commit still counts
+
+      - name: Scan for secrets
+        uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

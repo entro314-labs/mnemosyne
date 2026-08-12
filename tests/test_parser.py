@@ -3,15 +3,13 @@
 from __future__ import annotations
 
 import json
-from typing import TYPE_CHECKING
+from pathlib import Path
 
 import pytest
 
-if TYPE_CHECKING:
-    from pathlib import Path
-
 from mnemosyne.parser import (
     Attachment,
+    AttachmentBlock,
     Message,
     TextBlock,
     ThinkingBlock,
@@ -23,6 +21,9 @@ from mnemosyne.parser import (
     _strip_reminder_wrappers,
     _unescape_if_encoded,
     iter_events,
+    list_session_files,
+    project_slug,
+    session_touches_project,
     summarize_session,
 )
 
@@ -401,3 +402,128 @@ def test_summarize_counts_malformed_lines(tmp_path: Path) -> None:
     s = summarize_session(f)
     assert s.user_count == 1
     assert s.malformed_lines == 2
+
+
+# ---- project slug + cwd scoping (F-01) ----
+
+
+def test_project_slug_replaces_dot_and_underscore_like_claude_code() -> None:
+    """Claude Code collapses `/`, `.` and `_` to `-`; replacing only `/` misses the dir.
+
+    Verified against a real archive: `/Users/x/.ssh` is stored as
+    `-Users-x--ssh`, and `.../macos_contacts` as `...-macos-contacts`.
+    """
+    assert project_slug(Path("/Users/x/.ssh")) == "-Users-x--ssh"
+    assert project_slug(Path("/a/b/macos_contacts")) == "-a-b-macos-contacts"
+    assert project_slug(Path("/a/b/plain")) == "-a-b-plain"
+
+
+def test_project_slug_is_not_injective_so_trees_can_collide() -> None:
+    assert project_slug(Path("/a/foo.bar")) == project_slug(Path("/a/foo_bar"))
+
+
+def _session_with_cwds(path: Path, cwds: list[str]) -> None:
+    path.write_text(
+        "".join(json.dumps({"type": "user", "cwd": c}) + "\n" for c in cwds),
+        encoding="utf-8",
+    )
+
+
+def test_session_touches_project_matches_root_and_descendants(tmp_path: Path) -> None:
+    root = tmp_path / "proj"
+    root.mkdir()
+    at_root = tmp_path / "a.jsonl"
+    _session_with_cwds(at_root, [str(root)])
+    below = tmp_path / "b.jsonl"
+    _session_with_cwds(below, [str(root / "src" / "deep")])
+    assert session_touches_project(at_root, root) is True
+    assert session_touches_project(below, root) is True
+
+
+def test_session_touches_project_rejects_a_sibling_tree(tmp_path: Path) -> None:
+    root = tmp_path / "proj"
+    root.mkdir()
+    other = tmp_path / "proj-other"
+    other.mkdir()
+    f = tmp_path / "s.jsonl"
+    _session_with_cwds(f, [str(other)])
+    assert session_touches_project(f, root) is False
+
+
+def test_session_touches_project_finds_a_later_cwd(tmp_path: Path) -> None:
+    """A session's cwd changes as the user cds; any recorded cwd counts."""
+    root = tmp_path / "proj"
+    root.mkdir()
+    f = tmp_path / "s.jsonl"
+    _session_with_cwds(f, ["/somewhere/else", str(root)])
+    assert session_touches_project(f, root) is True
+
+
+def test_list_session_files_filters_foreign_sessions(tmp_path: Path) -> None:
+    """Two trees sharing one slug dir must not see each other's sessions."""
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    mine = tmp_path / "foo.bar"
+    mine.mkdir()
+    theirs = tmp_path / "foo_bar"
+    theirs.mkdir()
+    _session_with_cwds(archive / "mine.jsonl", [str(mine)])
+    _session_with_cwds(archive / "theirs.jsonl", [str(theirs)])
+
+    assert len(list_session_files(archive)) == 2
+    scoped = list_session_files(archive, project_path=mine)
+    assert [p.name for p in scoped] == ["mine.jsonl"]
+
+
+# ---- inline attachment blocks (F-03) ----
+
+
+def test_parse_blocks_keeps_image_metadata_without_the_payload() -> None:
+    blocks = _parse_blocks(
+        [
+            {
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": "image/png",
+                    "data": "iVBORw0K" * 100,
+                },
+            }
+        ]
+    )
+    assert len(blocks) == 1
+    block = blocks[0]
+    assert isinstance(block, AttachmentBlock)
+    assert block.kind == "image"
+    assert block.media_type == "image/png"
+    assert block.byte_size == 600
+    # The base64 payload must never survive into the parsed event.
+    assert "iVBORw0K" not in repr(block)
+
+
+def test_parse_blocks_keeps_document_title() -> None:
+    blocks = _parse_blocks(
+        [
+            {
+                "type": "document",
+                "title": "spec.pdf",
+                "source": {"type": "base64", "media_type": "application/pdf", "data": "JVBER=="},
+            }
+        ]
+    )
+    assert isinstance(blocks[0], AttachmentBlock)
+    assert blocks[0].title == "spec.pdf"
+    assert blocks[0].media_type == "application/pdf"
+
+
+def test_parse_blocks_keeps_fallback_detail() -> None:
+    blocks = _parse_blocks([{"type": "fallback", "from": {"model": "a"}, "to": {"model": "b"}}])
+    assert isinstance(blocks[0], AttachmentBlock)
+    assert blocks[0].kind == "fallback"
+    assert blocks[0].detail == {"from": {"model": "a"}, "to": {"model": "b"}}
+
+
+def test_parse_blocks_does_not_drop_unknown_types() -> None:
+    blocks = _parse_blocks([{"type": "something_new", "x": 1}])
+    assert isinstance(blocks[0], AttachmentBlock)
+    assert blocks[0].kind == "something_new"

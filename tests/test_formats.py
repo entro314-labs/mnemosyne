@@ -5,7 +5,14 @@ from __future__ import annotations
 import json
 
 from mnemosyne.formats import _strip_markdown, render_jsonl, render_plain
-from mnemosyne.parser import Message, TextBlock, ToolResultBlock, ToolUseBlock
+from mnemosyne.parser import (
+    Attachment,
+    Event,
+    Message,
+    TextBlock,
+    ToolResultBlock,
+    ToolUseBlock,
+)
 from mnemosyne.render import RenderOptions, Turn, collect_turns
 
 
@@ -207,3 +214,73 @@ def test_turn_is_dataclass_with_expected_fields() -> None:
     assert t.role == "user"
     assert t.timestamp == "2026-01-01T00:00:00Z"
     assert t.body == "hi"
+
+
+# ---- attachments reach every format (F-04) ----
+
+
+def _attachment(atype: str = "user_file", content: str = "hello") -> Attachment:
+    return Attachment(
+        uuid="a1",
+        parent_uuid=None,
+        timestamp="2026-01-01T00:00:05Z",
+        attachment_type=atype,
+        content=content,
+    )
+
+
+def test_collect_turns_emits_attachment_turn_when_included() -> None:
+    events: list[Event] = [_msg("user", [TextBlock(text="hi")]), _attachment()]
+    turns = collect_turns(events, RenderOptions(include_attachments=True))
+    assert [t.role for t in turns] == ["user", "attachment"]
+    assert "hello" in turns[-1].body
+
+
+def test_collect_turns_omits_attachment_without_the_flag() -> None:
+    events: list[Event] = [_msg("user", [TextBlock(text="hi")]), _attachment()]
+    turns = collect_turns(events, RenderOptions(include_attachments=False))
+    assert [t.role for t in turns] == ["user"]
+
+
+def test_attachment_turn_does_not_merge_into_a_neighbour() -> None:
+    events: list[Event] = [
+        _msg("user", [TextBlock(text="one")]),
+        _attachment(),
+        _msg("user", [TextBlock(text="two")]),
+    ]
+    turns = collect_turns(events, RenderOptions(include_attachments=True))
+    assert [t.role for t in turns] == ["user", "attachment", "user"]
+
+
+def test_jsonl_includes_attachment_records() -> None:
+    events: list[Event] = [_msg("user", [TextBlock(text="hi")]), _attachment()]
+    out = render_jsonl(events, opts=RenderOptions(include_attachments=True))
+    rows = [json.loads(line) for line in out.splitlines()]
+    assert [r["role"] for r in rows] == ["user", "attachment"]
+    assert "hello" in rows[-1]["text"]
+
+
+def test_plain_includes_attachment_section() -> None:
+    events: list[Event] = [_msg("user", [TextBlock(text="hi")]), _attachment()]
+    out = render_plain(events, opts=RenderOptions(include_attachments=True))
+    assert "=== ATTACHMENT" in out
+    assert "hello" in out
+
+
+# ---- plain output must not leak generated markup (F-12) ----
+
+
+def test_strip_markdown_removes_long_fences() -> None:
+    """`render._fence` grows past three backticks when content contains a fence."""
+    body = "````python\ncode ``` here\n````"
+    out = _strip_markdown(body)
+    assert "````" not in out
+    assert "code ``` here" in out
+
+
+def test_strip_markdown_removes_details_wrapper() -> None:
+    body = "<details><summary>💭 thinking</summary>\n\nreasoning\n\n</details>"
+    out = _strip_markdown(body)
+    assert "<details>" not in out
+    assert "</details>" not in out
+    assert "reasoning" in out

@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import json
+import os
+import stat
 import subprocess
+import tempfile
 import tomllib
 from dataclasses import asdict, dataclass, field, fields
 from datetime import UTC, datetime
@@ -55,6 +58,13 @@ def load_settings(path: Path = CONFIG_PATH) -> Settings:
     with path.open("rb") as f:
         data = tomllib.load(f)
     defaults = Defaults(**_filter_known_fields(Defaults, data.get("defaults", {})))
+    # A hard cap is a safety boundary; a zero/negative value in config must fail
+    # loudly here rather than silently rendering unbounded tool output later.
+    if not isinstance(defaults.max_tool_chars, int) or defaults.max_tool_chars <= 0:
+        raise ValueError(
+            f"{path}: defaults.max_tool_chars must be a positive integer, "
+            f"got {defaults.max_tool_chars!r}"
+        )
     projects: dict[str, ProjectEntry] = {}
     for raw in data.get("projects", []):
         if "slug" not in raw:
@@ -73,8 +83,19 @@ def save_settings(settings: Settings, path: Path = CONFIG_PATH) -> None:
             for p in sorted(settings.projects.values(), key=lambda p: p.slug)
         ],
     }
-    with path.open("wb") as f:
-        tomli_w.dump(payload, f)
+    mode = stat.S_IMODE(path.stat().st_mode) if path.exists() else None
+    fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    tmp = path.parent / Path(tmp_name).name
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            tomli_w.dump(payload, handle)
+            handle.flush()
+            os.fsync(handle.fileno())
+        if mode is not None:
+            tmp.chmod(mode)
+        tmp.replace(path)
+    finally:
+        tmp.unlink(missing_ok=True)
 
 
 # ---- Discovery ----

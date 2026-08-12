@@ -22,9 +22,10 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from mcp.server import MCPServer
+from mcp.server.mcpserver import MCPServer
 from mcp.types import ToolAnnotations
 
+from mnemosyne import __version__
 from mnemosyne import codex as codex_store
 from mnemosyne import drift as drift_check
 from mnemosyne.artifacts import SubagentRef, discover_session_artifacts
@@ -55,7 +56,7 @@ from mnemosyne.query import search_sessions as _query_sessions
 from mnemosyne.query import self_align as _query_self_align
 from mnemosyne.render import Mode, RenderOptions, render_markdown
 
-mcp = MCPServer("mnemosyne")
+mcp = MCPServer("mnemosyne", version=__version__)
 
 # Every mnemosyne tool only reads local archives — never writes, never leaves the
 # machine. Declaring that lets hosts auto-approve the calls instead of prompting.
@@ -535,9 +536,9 @@ def check_drift(project: str | None = None) -> dict[str, Any]:
 
     For every memory, checks that the file paths it cites still exist, that
     ``path:line`` anchors still fall inside the file, and that ``[[links]]``
-    resolve. Purely deterministic — a finding means the memory's claims about
-    the repository no longer hold and it should be re-verified before being
-    trusted. Run this when recalled memories will drive decisions.
+    resolve. Purely deterministic — a finding means a cited reference did not
+    resolve in the configured worktree/archive roots and should be reviewed
+    before that claim is trusted. It does not prove the whole memory is stale.
 
     Args:
         project: slug or absolute local path; omit for the current cwd's project.
@@ -566,7 +567,7 @@ def get_session_handoff(session_id: str, project: str | None = None) -> dict[str
 
 def run() -> None:
     """Entry point for ``syne mcp`` — runs the MCP server on stdio."""
-    mcp.run()
+    mcp.run(transport="stdio")
 
 
 if __name__ == "__main__":

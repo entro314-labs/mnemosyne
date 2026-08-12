@@ -7,7 +7,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "command -v syne >/dev/null 2>&1 && syne recall --bundle --max-chars 2000 || true",
+            "command": "command -v syne >/dev/null 2>&1 || exit 0; syne recall --bundle --max-chars 2000",
             "timeout": 15
           }
         ]

@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 
 from mnemosyne.cli import _detect_cwd_project
 from mnemosyne.config import ProjectEntry, Settings
+from mnemosyne.parser import project_slug
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -17,7 +18,7 @@ def _make_workspace(tmp_path: Path, *, with_session: bool) -> tuple[Path, Path, 
     cwd.mkdir()
     claude_root = tmp_path / "projects"
     claude_root.mkdir()
-    slug = str(cwd.resolve()).replace("/", "-")
+    slug = project_slug(cwd)
     slug_dir = claude_root / slug
     slug_dir.mkdir()
     if with_session:

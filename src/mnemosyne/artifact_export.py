@@ -25,6 +25,7 @@ from __future__ import annotations
 import json
 import re
 import shutil
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -35,11 +36,46 @@ from mnemosyne.parser import Message, read_session
 from mnemosyne.render import RenderOptions, render_markdown
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
     from pathlib import Path
 
     from mnemosyne.artifacts import ArtifactSelection, SessionArtifacts, SubagentRef
     from mnemosyne.memory import MemoryCollection
     from mnemosyne.parser import Event
+
+
+@contextmanager
+def _managed_dir(target: Path) -> Iterator[Path]:
+    """Yield a staging directory that atomically replaces ``target`` on success.
+
+    Artifact subtrees are *fully managed*: they must mirror the current source
+    state, so a subagent/workflow/tool-result that disappeared upstream has to
+    disappear here too. Writing in place could only add or overwrite, which left
+    deleted sources behind on every rerun as false derived state.
+
+    Staging first also preserves the previous good output if the render raises —
+    the swap only happens once the whole category rendered successfully. An empty
+    staging dir is a valid outcome: it removes a now-empty category.
+    """
+    staging = target.parent / f".{target.name}.staging"
+    if staging.exists():
+        shutil.rmtree(staging)
+    staging.mkdir(parents=True, exist_ok=True)
+    try:
+        yield staging
+    except BaseException:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
+    if any(staging.iterdir()):
+        if target.exists():
+            shutil.rmtree(target)
+        staging.replace(target)
+    else:
+        # Category selected but produced nothing — drop any stale subtree.
+        staging.rmdir()
+        if target.exists():
+            shutil.rmtree(target)
+
 
 _SLUG_KEEP = re.compile(r"[^\w\s-]+", re.UNICODE)
 _SLUG_SQUASH = re.compile(r"[-\s_]+")
@@ -148,7 +184,14 @@ def _write_json(path: Path, payload: dict) -> None:
 
 
 def _write_summaries(out_dir: Path, base: str, summaries: list[Path]) -> int:
-    """Copy session-memory handoff digests through, whitespace-normalised."""
+    """Copy session-memory handoff digests through, whitespace-normalised.
+
+    Summaries are loose files rather than a subtree, so stale ones are cleared by
+    name — a session that went from two summaries back to one must not keep
+    ``<base>.summary-2.md`` around.
+    """
+    for stale in out_dir.glob(f"{base}.summary*.md"):
+        stale.unlink()
     written = 0
     for i, src in enumerate(summaries):
         text = normalize_whitespace(src.read_text(encoding="utf-8")) + "\n"
@@ -160,7 +203,11 @@ def _write_summaries(out_dir: Path, base: str, summaries: list[Path]) -> int:
 
 
 def _write_subagents(out_dir: Path, base: str, refs: list[SubagentRef], opts: RenderOptions) -> int:
-    sub_dir = out_dir / f"{base}.subagents"
+    with _managed_dir(out_dir / f"{base}.subagents") as sub_dir:
+        return _fill_subagents(sub_dir, refs, opts)
+
+
+def _fill_subagents(sub_dir: Path, refs: list[SubagentRef], opts: RenderOptions) -> int:
     used: set[str] = set()
     entries: list[dict[str, Any]] = []
     for ref in refs:
@@ -188,7 +235,15 @@ def _write_workflows(
 
     Returns ``(scripts_written, workflow_agents_written)``.
     """
-    wf_root = out_dir / f"{base}.workflows"
+    with _managed_dir(out_dir / f"{base}.workflows") as wf_root:
+        return _fill_workflows(wf_root, artifacts, opts)
+
+
+def _fill_workflows(
+    wf_root: Path,
+    artifacts: SessionArtifacts,
+    opts: RenderOptions,
+) -> tuple[int, int]:
     scripts = 0
     for script in artifacts.scripts:
         dest = wf_root / "scripts" / script.path.name
@@ -220,20 +275,18 @@ def _write_workflows(
 
 def _write_tool_results(out_dir: Path, base: str, files: list[Path]) -> int:
     """Copy externalised tool outputs through the deterministic output scrub."""
-    tr_dir = out_dir / f"{base}.tool-results"
-    written = 0
-    for src in files:
-        try:
-            raw = src.read_text(encoding="utf-8")
-        except UnicodeDecodeError:
-            tr_dir.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(src, tr_dir / src.name)  # not text — copy raw bytes
+    with _managed_dir(out_dir / f"{base}.tool-results") as tr_dir:
+        written = 0
+        for src in files:
+            try:
+                raw = src.read_text(encoding="utf-8")
+            except UnicodeDecodeError:
+                shutil.copyfile(src, tr_dir / src.name)  # not text — copy raw bytes
+                written += 1
+                continue
+            (tr_dir / src.name).write_text(scrub_tool_output(raw) + "\n", encoding="utf-8")
             written += 1
-            continue
-        tr_dir.mkdir(parents=True, exist_ok=True)
-        (tr_dir / src.name).write_text(scrub_tool_output(raw) + "\n", encoding="utf-8")
-        written += 1
-    return written
+        return written
 
 
 def write_session_artifacts(
@@ -249,17 +302,19 @@ def write_session_artifacts(
     ``selection`` is an :class:`~mnemosyne.artifacts.ArtifactSelection`. Subagent
     and workflow transcripts are rendered with ``opts`` — the same mode/cleaning as
     the main transcript — so the whole bundle reads consistently.
+
+    A *selected* category is reconciled, not merely added to: its managed subtree
+    is replaced wholesale, so sources deleted upstream stop appearing here. An
+    *unselected* category is left completely untouched.
     """
     result = ArtifactWriteResult()
-    if not artifacts:
-        return result
-    if selection.summaries and artifacts.summaries:
+    if selection.summaries:
         result.summaries = _write_summaries(out_dir, base, artifacts.summaries)
-    if selection.subagents and artifacts.subagents:
+    if selection.subagents:
         result.subagents = _write_subagents(out_dir, base, artifacts.subagents, opts)
-    if selection.workflows and (artifacts.scripts or artifacts.workflow_runs):
+    if selection.workflows:
         result.scripts, result.workflow_agents = _write_workflows(out_dir, base, artifacts, opts)
-    if selection.tool_results and artifacts.tool_results:
+    if selection.tool_results:
         result.tool_results = _write_tool_results(out_dir, base, artifacts.tool_results)
     return result
 
@@ -277,19 +332,22 @@ def write_project_memories(
     if present, a consolidated ``memories.md``, and a machine-readable
     ``memories.json`` resolving the ``[[link]]`` graph. Returns the memory directory,
     or ``None`` when the project has no memories.
+
+    ``memory/`` is a managed subtree: it is replaced wholesale so a memory deleted
+    upstream stops appearing in the export.
     """
     if not coll:
         return None
-    mem_out = out_dir / "memory"
-    mem_out.mkdir(parents=True, exist_ok=True)
-    for m in coll.memories:
-        front = m.path.read_text(encoding="utf-8")
-        (mem_out / m.path.name).write_text(normalize_whitespace(front) + "\n", encoding="utf-8")
-    if coll.index_path is not None:
-        text = normalize_whitespace(coll.index_path.read_text(encoding="utf-8")) + "\n"
-        (mem_out / "MEMORY.md").write_text(text, encoding="utf-8")
-    (mem_out / "memories.md").write_text(
-        render_memories_markdown(coll, project_label=project_label), encoding="utf-8"
-    )
-    _write_json(mem_out / "memories.json", build_memory_index(coll, project_path=project_path))
-    return mem_out
+    target = out_dir / "memory"
+    with _managed_dir(target) as mem_out:
+        for m in coll.memories:
+            front = m.path.read_text(encoding="utf-8")
+            (mem_out / m.path.name).write_text(normalize_whitespace(front) + "\n", encoding="utf-8")
+        if coll.index_path is not None:
+            text = normalize_whitespace(coll.index_path.read_text(encoding="utf-8")) + "\n"
+            (mem_out / "MEMORY.md").write_text(text, encoding="utf-8")
+        (mem_out / "memories.md").write_text(
+            render_memories_markdown(coll, project_label=project_label), encoding="utf-8"
+        )
+        _write_json(mem_out / "memories.json", build_memory_index(coll, project_path=project_path))
+    return target
