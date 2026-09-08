@@ -33,6 +33,30 @@ sources it came from.
   so output is deliberately not byte-for-byte reproducible.
 
 ### Fixed
+- **The MCP server and `syne recall` scoped a project by the registry, not by the
+  working tree that identified it.** With the lossy slug encoding, the registry's
+  `local_path` is whichever tree the first-read session recorded, so in a
+  collision the cwd's own sessions could be excluded and a sibling tree's
+  returned. Every surface now applies one rule: the cwd (or an absolute `project`
+  path) is authoritative; a bare slug uses the registered path when known;
+  `--project-dir` is face value. The interactive `syne` default and
+  `merge --all-from <path|name>` now scope and report exclusions like `syne list`,
+  `syne recall --project-dir` no longer filters, and `export <id>` disambiguates
+  filenames against the same scoped set as `export-all`.
+- **`index.json` was rewritten with only the last run's filter.** A
+  `--since`/`--matching` rerun left every earlier rendered file on disk but
+  dropped them from the index. Prior entries are now kept while their rendered
+  file exists, so the index mirrors the directory; an unreadable prior index is
+  rebuilt.
+- **One long first prompt could empty the self-align packet.** Session headers
+  carried the full first prompt (10k+ characters on a real archive), so the
+  bounded `self_align` packet dropped every recent session — and the
+  "where we left off" suggestion with them — to fit its budget. Header rows now
+  carry a ≤300-character excerpt; exports keep the full prompt.
+- `syne codex-export` now writes the same `.meta.json` sidecar as `syne export`
+  (`--no-sidecar` to skip), and `syne align` checks the configured `output_dir`
+  for exports rather than assuming `.mnemosyne-exports/`.
+- `get_session` (MCP) now emits per-turn anchors like exports and `get_subagent`.
 - **Project archives whose path contains `.` or `_` were invisible.** Claude Code
   flattens `/`, `.` and `_` to `-` when naming a slug directory; mnemosyne replaced
   only `/`, so it computed a directory that does not exist and reported "no

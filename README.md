@@ -97,7 +97,7 @@ syne recall [query] [--memories]     # small capped recall brief → stdout (hoo
 syne align                           # write the self-alignment directive into CLAUDE.md + AGENTS.md
 syne drift                           # verify curated memories against the live repo (staleness check)
 syne codex-list [--all]              # Codex CLI rollouts for this project (~/.codex)
-syne codex-export <id>               # render one Codex rollout through the same pipeline
+syne codex-export <id>               # render one Codex rollout through the same pipeline (+ sidecar)
 syne projects                        # registry of all known projects
 syne config-show                     # current settings file
 syne install / syne uninstall         # plugin sidecar
@@ -169,9 +169,12 @@ Each `.meta.json` carries everything a downstream tool needs without
 re-parsing the raw JSONL: `{session_id, project_slug, ai_title, first_prompt,
 first_timestamp, last_timestamp, user_count, assistant_count, source_jsonl,
 source_size_bytes, source_malformed_lines, rendered_file, rendered_size_bytes,
-mode, format, generated_at}`. `index.json` is the same data aggregated across all sessions
-in the export. `memory/` is written once per project; everything else is
-per-session, keyed to the transcript's filename.
+mode, format, generated_at}`. `index.json` aggregates the same data across every
+session exported into that directory: a filtered rerun (`--since`, `--matching`)
+refreshes its own entries and keeps the others for as long as their rendered
+files exist, so the index mirrors what is on disk rather than the last filter.
+`memory/` is written once per project; everything else is per-session, keyed to
+the transcript's filename.
 
 ## Render modes
 
@@ -234,7 +237,7 @@ leaves the machine), so hosts that honor annotations can auto-approve the calls:
 | `self_align(query?, project?, all_projects=false, max_chars=6000)` | **Start here.** One bounded packet: memory matches/index + recent summaries + transcript snippets + Codex rollouts/handoffs for the same project + `suggested_next` calls + guidance. Current project by default; cross-project only when explicit. No full bodies/transcripts. |
 | `list_projects()` | Every project with sessions, sorted most-recent-used. |
 | `list_sessions(project?, limit=20)` | Newest sessions in a project. |
-| `get_session_summary(session_id, project?)` | Cheap header — no transcript loading. |
+| `get_session_summary(session_id, project?)` | Cheap header — no transcript loading; `first_prompt` is a ≤300-char excerpt. |
 | `get_session_handoff(session_id, project?)` | The compaction handoff digest (Title / Current State / Next steps) — "where we left off", cheaper than a transcript. |
 | `get_session(session_id, project?, mode="transcript", max_tool_chars=2000)` | Rendered markdown for one session. |
 | `recall_recent(project?, limit=5)` | Last N session summaries for the current project. |
@@ -400,9 +403,11 @@ each session record — authoritative, not heuristic.
 Because one archive directory can legitimately hold sessions from more than one
 working tree, the default (current-project) scope filters sessions by their
 recorded `cwd`: a session is in scope when it did work at or below the project
-root. Anything excluded is reported, never silently hidden. Passing
-`--project-dir` explicitly is treated as naming the directory, and takes it at
-face value.
+root. Anything excluded is reported, never silently hidden. The same rule
+scopes the MCP server and `syne recall`: the working directory (or an absolute
+`project` path) is authoritative; a bare slug names only the directory, so its
+registered `local_path` is used when known. Passing `--project-dir` explicitly
+is treated as naming the directory, and takes it at face value.
 
 ## Durability contract
 
