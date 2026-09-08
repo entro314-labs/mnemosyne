@@ -403,11 +403,13 @@ each session record — authoritative, not heuristic.
 Because one archive directory can legitimately hold sessions from more than one
 working tree, the default (current-project) scope filters sessions by their
 recorded `cwd`: a session is in scope when it did work at or below the project
-root. Anything excluded is reported, never silently hidden. The same rule
-scopes the MCP server and `syne recall`: the working directory (or an absolute
-`project` path) is authoritative; a bare slug names only the directory, so its
-registered `local_path` is used when known. Passing `--project-dir` explicitly
-is treated as naming the directory, and takes it at face value.
+root. `list`, `export-all`, the interactive default and `merge --all-from`
+report the excluded count rather than hiding it. The same rule scopes the MCP
+server and `syne recall` — the working directory (or an absolute `project`
+path) is authoritative; a bare slug names only the directory, so its registered
+`local_path` is used when known — but those surfaces apply the filter without
+reporting an excluded count. Passing `--project-dir` explicitly is treated as
+naming the directory, and takes it at face value.
 
 ## Durability contract
 
