@@ -210,18 +210,24 @@ def _opts_from_settings(
     d = settings.defaults
     n = max_tool_chars if max_tool_chars is not None else d.max_tool_chars
     chosen_mode: Mode = mode if mode is not None else _coerce_mode(d.mode)
-    return RenderOptions(
-        mode=chosen_mode,
-        include_thinking=include_thinking if include_thinking is not None else d.include_thinking,
-        include_attachments=(
-            include_attachments if include_attachments is not None else d.include_attachments
-        ),
-        include_reminders=(
-            include_reminders if include_reminders is not None else d.include_reminders
-        ),
-        max_tool_result_chars=n,
-        max_tool_input_chars=n,
-    )
+    try:
+        return RenderOptions(
+            mode=chosen_mode,
+            include_thinking=(
+                include_thinking if include_thinking is not None else d.include_thinking
+            ),
+            include_attachments=(
+                include_attachments if include_attachments is not None else d.include_attachments
+            ),
+            include_reminders=(
+                include_reminders if include_reminders is not None else d.include_reminders
+            ),
+            max_tool_result_chars=n,
+            max_tool_input_chars=n,
+        )
+    except ValueError as exc:
+        # A rejected cap is a usage error, not a crash: report it as one.
+        raise SystemExit(f"error: {exc}") from exc
 
 
 def _coerce_mode(value: str) -> Mode:
@@ -1653,9 +1659,9 @@ def recall(  # noqa: PLR0917
             return
         dirs = [pd]
         project_paths[pd.name] = None if project_dir is not None else cwd
-    if bundle:
-        print(
-            build_bundle(
+    try:
+        if bundle:
+            text = build_bundle(
                 dirs,
                 settings,
                 query_str=query,
@@ -1664,21 +1670,23 @@ def recall(  # noqa: PLR0917
                 include_codex=codex,
                 project_paths=project_paths,
             )
-        )
-        return
-    print(
-        build_recall(
-            dirs,
-            settings,
-            query_str=query,
-            memories=memories,
-            limit=limit,
-            context_chars=context_chars,
-            max_chars=max_chars,
-            fmt=fmt,
-            project_paths=project_paths,
-        )
-    )
+        else:
+            text = build_recall(
+                dirs,
+                settings,
+                query_str=query,
+                memories=memories,
+                limit=limit,
+                context_chars=context_chars,
+                max_chars=max_chars,
+                fmt=fmt,
+                project_paths=project_paths,
+            )
+    except ValueError as exc:
+        # Rejected caps/limits (zero, negative, or a budget below the minimum
+        # packet) are usage errors; a hook sees a clean non-zero exit, not a trace.
+        raise SystemExit(f"error: {exc}") from exc
+    print(text)
 
 
 @app.command

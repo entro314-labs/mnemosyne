@@ -62,6 +62,8 @@ sources it came from.
   excluded. Both now count the scoped set. The self-align packet and `syne
   recall` brief carry an `excluded_sessions` count, so a filtered scope is never
   silent on any surface.
+- A zero or negative `--max-chars` / `--max-tool-chars` is reported as a usage
+  error with a non-zero exit instead of a traceback.
 - **Project archives whose path contains `.` or `_` were invisible.** Claude Code
   flattens `/`, `.` and `_` to `-` when naming a slug directory; mnemosyne replaced
   only `/`, so it computed a directory that does not exist and reported "no

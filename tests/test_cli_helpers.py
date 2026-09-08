@@ -467,3 +467,26 @@ def test_merge_all_from_path_scopes_by_that_tree_and_slug_is_face_value(
         json.loads(by_slug.with_suffix(".meta.json").read_text(encoding="utf-8"))["session_count"]
         == 2
     )
+
+
+# ---- rejected caps are usage errors, not tracebacks ----
+
+
+@pytest.mark.parametrize("bad", [0, -5])
+def test_recall_rejects_non_positive_cap_as_usage_error(tmp_path: Path, monkeypatch, bad) -> None:
+    project_dir = tmp_path / "-project"
+    project_dir.mkdir()
+    _stub_registry(monkeypatch, project_dir, tmp_path)
+    with pytest.raises(SystemExit, match="max_chars must be a positive integer"):
+        cli.recall(project_dir=project_dir, max_chars=bad)
+
+
+def test_export_all_rejects_non_positive_tool_cap_as_usage_error(
+    tmp_path: Path, monkeypatch
+) -> None:
+    project_dir = tmp_path / "-project"
+    project_dir.mkdir()
+    _write_session(project_dir, "aaaaaaaa-1", "Work", "2026-01-01T00:00:00Z", tmp_path)
+    _stub_registry(monkeypatch, project_dir, tmp_path)
+    with pytest.raises(SystemExit, match="must be a positive integer"):
+        cli.export_all(project_dir=project_dir, output=tmp_path / "out", max_tool_chars=0)
