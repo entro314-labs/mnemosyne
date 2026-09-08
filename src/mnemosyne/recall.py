@@ -24,6 +24,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from mnemosyne.config import Settings
+    from mnemosyne.query import ProjectPaths
 
 RecallFormat = Literal["markdown", "json"]
 
@@ -80,13 +81,14 @@ def _gather(
     memories: bool,
     limit: int,
     context_chars: int,
+    project_paths: ProjectPaths | None,
 ) -> tuple[str, list[dict[str, Any]]]:
     """Return (kind, rows) for the requested recall, dispatched by the flags."""
     if query_str:
         if memories:
             return "memory_search", query.search_memories(dirs, query_str, limit)
         return "session_search", query.search_sessions(
-            dirs, query_str, settings, limit, context_chars
+            dirs, query_str, settings, limit, context_chars, project_paths=project_paths
         )
     if memories:
         rows: list[dict[str, Any]] = []
@@ -95,7 +97,7 @@ def _gather(
         return "memory_index", rows[:limit]
     recent: list[dict[str, Any]] = []
     for pd in dirs:
-        recent.extend(query.recent_sessions(pd, limit, settings))
+        recent.extend(query.recent_sessions(pd, limit, settings, project_paths=project_paths))
     recent.sort(key=lambda r: r.get("last_timestamp") or "", reverse=True)
     return "recent", recent[:limit]
 
@@ -206,10 +208,13 @@ def build_bundle(
     fmt: RecallFormat = "markdown",
     include_codex: bool = True,
     codex_home: Path | None = None,
+    project_paths: ProjectPaths | None = None,
 ) -> str:
     """Render the aggregated self-align packet (the one-call entry point), capped.
 
     ``max_chars`` must be positive, or ``None`` to opt out of the cap explicitly.
+    ``project_paths`` is the caller's scope decision per archive dir (see
+    :data:`mnemosyne.query.ProjectPaths`); omit it to scope by the registry.
     """
     validate_cap(max_chars, "max_chars")
     raw_packet = query.self_align(
@@ -218,6 +223,7 @@ def build_bundle(
         query=query_str,
         include_codex=include_codex,
         codex_home=codex_home,
+        project_paths=project_paths,
     )
     size_fn = None if fmt == "json" else lambda value: len(_render_bundle(value))
     packet = query.fit_packet(
@@ -240,12 +246,14 @@ def build_recall(
     context_chars: int = 160,
     max_chars: int | None = 4000,
     fmt: RecallFormat = "markdown",
+    project_paths: ProjectPaths | None = None,
 ) -> str:
     """Render a capped recall over ``dirs`` (the project dirs to consult).
 
     ``query_str`` set → search; otherwise recent sessions (or the memory index
     when ``memories`` is set). Output is hard-capped at ``max_chars``, which must
-    be positive, or ``None`` to opt out of the cap explicitly.
+    be positive, or ``None`` to opt out of the cap explicitly. ``project_paths``
+    is the caller's scope decision per archive dir; omit it to scope by the registry.
     """
     if limit < 0:
         raise ValueError("limit must be non-negative")
@@ -259,6 +267,7 @@ def build_recall(
         memories=memories,
         limit=limit,
         context_chars=context_chars,
+        project_paths=project_paths,
     )
     if fmt == "json":
         return _capped_json({"kind": kind, "items": rows}, max_chars)

@@ -205,3 +205,115 @@ def test_fit_packet_rejects_budget_smaller_than_minimum_policy_packet(tmp_path: 
     packet = self_align([_make_project(tmp_path)], Settings(), query="JWT")
     with pytest.raises(ValueError, match="too small"):
         fit_packet(packet, 100)
+
+
+# ---- scope: the working tree that defines an archive dir (slug collisions) ----
+
+
+def _session_in(path: Path, cwd: Path, text: str) -> None:
+    path.write_text(
+        json.dumps(
+            {
+                "type": "user",
+                "uuid": "u1",
+                "timestamp": "2026-01-01T00:00:00Z",
+                "cwd": str(cwd),
+                "message": {"role": "user", "content": [{"type": "text", "text": text}]},
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+
+def _collision(tmp_path: Path) -> tuple[Path, Path, Path]:
+    """One archive dir holding sessions from two sibling trees (foo.bar / foo_bar)."""
+    archive = tmp_path / "-a-foo-bar"
+    archive.mkdir()
+    mine = tmp_path / "foo.bar"
+    mine.mkdir()
+    theirs = tmp_path / "foo_bar"
+    theirs.mkdir()
+    _session_in(archive / "aaaa0000-mine.jsonl", mine, "my work on auth")
+    _session_in(archive / "bbbb0000-theirs.jsonl", theirs, "their work on auth")
+    return archive, mine, theirs
+
+
+def _registry(archive: Path, local_path: Path | None) -> Settings:
+    from mnemosyne.config import ProjectEntry  # noqa: PLC0415
+
+    entry = ProjectEntry(slug=archive.name, local_path=str(local_path) if local_path else None)
+    return Settings(projects={archive.name: entry})
+
+
+@pytest.mark.parametrize(
+    ("registry_tree", "override", "expected"),
+    [
+        # An explicit tree is authoritative, whatever the registry says.
+        ("theirs", "mine", {"aaaa0000-mine.jsonl"}),
+        (None, "mine", {"aaaa0000-mine.jsonl"}),
+        # An explicit None takes the directory at face value.
+        ("mine", "none", {"aaaa0000-mine.jsonl", "bbbb0000-theirs.jsonl"}),
+        # No override: the registry path scopes the directory.
+        ("mine", None, {"aaaa0000-mine.jsonl"}),
+        ("theirs", None, {"bbbb0000-theirs.jsonl"}),
+        # Unregistered slug: unfiltered.
+        (None, None, {"aaaa0000-mine.jsonl", "bbbb0000-theirs.jsonl"}),
+    ],
+)
+def test_scoped_session_files_scope_precedence(
+    tmp_path: Path, registry_tree: str | None, override: str | None, expected: set[str]
+) -> None:
+    from mnemosyne.query import scoped_session_files  # noqa: PLC0415
+
+    archive, mine, theirs = _collision(tmp_path)
+    trees = {"mine": mine, "theirs": theirs}
+    settings = _registry(archive, trees[registry_tree] if registry_tree else None)
+    project_paths: dict[str, Path | None] | None = None
+    if override == "none":
+        project_paths = {archive.name: None}
+    elif override is not None:
+        project_paths = {archive.name: trees[override]}
+    files = scoped_session_files(archive, settings, project_paths=project_paths)
+    assert {p.name for p in files} == expected
+
+
+def test_scoped_session_files_registry_path_falls_back_but_explicit_tree_does_not(
+    tmp_path: Path,
+) -> None:
+    """A stale registry path must not empty a real archive; an explicit tree may."""
+    from mnemosyne.query import scoped_session_files  # noqa: PLC0415
+
+    archive, _, _ = _collision(tmp_path)
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    assert len(scoped_session_files(archive, _registry(archive, elsewhere))) == 2
+    assert scoped_session_files(archive, Settings(), project_paths={archive.name: elsewhere}) == []
+
+
+def test_recall_surfaces_honor_the_explicit_tree(tmp_path: Path) -> None:
+    """recent / search / self_align all scope by the caller's tree, not the registry."""
+    archive, mine, theirs = _collision(tmp_path)
+    settings = _registry(archive, theirs)  # registry points at the sibling tree
+    paths = {archive.name: mine}
+
+    recent = recent_sessions(archive, 10, settings, project_paths=paths)
+    assert [r["session_id"] for r in recent] == ["aaaa0000-mine"]
+
+    hits = search_sessions([archive], "work on auth", settings, project_paths=paths)
+    assert [h["session_id"] for h in hits] == ["aaaa0000-mine"]
+
+    packet = self_align([archive], settings, query="auth", project_paths=paths)
+    assert [r["session_id"] for r in packet["recent_sessions"]] == ["aaaa0000-mine"]
+    assert [h["session_id"] for h in packet["session_hits"]] == ["aaaa0000-mine"]
+
+
+def test_local_paths_for_prefers_the_explicit_tree(tmp_path: Path) -> None:
+    from mnemosyne.query import local_paths_for  # noqa: PLC0415
+
+    archive, mine, theirs = _collision(tmp_path)
+    settings = _registry(archive, theirs)
+    assert local_paths_for([archive], settings) == [theirs]
+    assert local_paths_for([archive], settings, project_paths={archive.name: mine}) == [mine]
+    # Face value carries no tree: fall through to the registry.
+    assert local_paths_for([archive], settings, project_paths={archive.name: None}) == [theirs]

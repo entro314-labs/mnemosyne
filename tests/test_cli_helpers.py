@@ -238,6 +238,7 @@ def test_interactive_preserves_summaries_flag(include_summaries, tmp_path, monke
             {
                 "type": "user",
                 "timestamp": "2026-05-01T12:00:00Z",
+                "cwd": str(tmp_path),
                 "message": {"content": [{"type": "text", "text": "prompt"}]},
             }
         )
@@ -246,6 +247,7 @@ def test_interactive_preserves_summaries_flag(include_summaries, tmp_path, monke
     )
     entry = ProjectEntry(slug=project_dir.name, local_path=str(tmp_path), friendly_name="project")
     settings = cli.Settings(projects={entry.slug: entry})
+    monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(cli, "CLAUDE_PROJECTS", claude_root)
     monkeypatch.setattr(cli, "load_settings", lambda: settings)
     monkeypatch.setattr(cli, "sync_registry", lambda value: value)
@@ -325,3 +327,115 @@ def test_cross_project_flags_reject_an_explicit_project_scope(tmp_path: Path) ->
 def test_codex_all_rejects_an_explicit_cwd(tmp_path: Path) -> None:
     with pytest.raises(SystemExit, match="mutually exclusive"):
         cli.codex_list(cwd=tmp_path, all_sessions=True)
+
+
+# ---- index.json mirrors the directory, not just the last filter (F-idx) ----
+
+
+def _write_session(project_dir: Path, session_id: str, title: str, ts: str, cwd: Path) -> None:
+    records = [
+        {
+            "type": "user",
+            "uuid": f"u-{session_id}",
+            "timestamp": ts,
+            "cwd": str(cwd),
+            "message": {"content": [{"type": "text", "text": f"prompt for {title}"}]},
+        },
+        {"type": "ai-title", "aiTitle": title},
+    ]
+    (project_dir / f"{session_id}.jsonl").write_text(
+        "\n".join(json.dumps(record) for record in records) + "\n", encoding="utf-8"
+    )
+
+
+def _stub_registry(monkeypatch, project_dir: Path, local_path: Path) -> cli.Settings:
+    settings = cli.Settings(
+        projects={
+            project_dir.name: ProjectEntry(
+                slug=project_dir.name, local_path=str(local_path), friendly_name="project"
+            )
+        }
+    )
+    monkeypatch.setattr(cli, "load_settings", lambda: settings)
+    monkeypatch.setattr(cli, "sync_registry", lambda value: value)
+    monkeypatch.setattr(cli, "save_settings", lambda value: None)
+    return settings
+
+
+# ---- one session → one filename, whichever command exported it ----
+
+
+def _collision_archive(tmp_path: Path) -> tuple[Path, Path, Path]:
+    project_dir = tmp_path / "-a-foo-bar"
+    project_dir.mkdir()
+    mine = tmp_path / "foo.bar"
+    mine.mkdir()
+    theirs = tmp_path / "foo_bar"
+    theirs.mkdir()
+    _write_session(project_dir, "aaaaaaaa-1", "Same title", "2026-01-01T00:00:00Z", mine)
+    _write_session(project_dir, "bbbbbbbb-2", "Same title", "2026-01-02T00:00:00Z", theirs)
+    return project_dir, mine, theirs
+
+
+def test_export_and_export_all_agree_on_filenames_under_the_same_scope(
+    tmp_path: Path, monkeypatch
+) -> None:
+    project_dir, mine, _ = _collision_archive(tmp_path)
+    _stub_registry(monkeypatch, project_dir, mine)
+    monkeypatch.chdir(mine)
+    monkeypatch.setattr(cli, "project_dir_for_cwd", lambda cwd, claude_home=None: project_dir)
+    output = tmp_path / "out"
+
+    cli.export("aaaaaaaa", output=output)
+    cli.export_all(output=output)
+    # Only the cwd's session is in scope, so it owns the bare title — once.
+    assert sorted(p.name for p in output.glob("*.md")) == ["same-title.md"]
+
+
+def test_interactive_default_scopes_the_detected_workspace_by_cwd(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    project_dir, mine, _ = _collision_archive(tmp_path)
+    claude_root = project_dir.parent
+    settings = _stub_registry(monkeypatch, project_dir, mine)
+    entry = settings.projects[project_dir.name]
+    monkeypatch.chdir(mine)
+    monkeypatch.setattr(cli, "CLAUDE_PROJECTS", claude_root)
+    monkeypatch.setattr(cli, "_detect_cwd_project", lambda value: entry)
+    answers = iter(["all", str(tmp_path / "out")])
+    monkeypatch.setattr(cli.Prompt, "ask", lambda *args, **kwargs: next(answers))
+    exported: list[str] = []
+
+    def fake_write_export(s, *args, **kwargs):
+        exported.append(s.session_id)
+        return Path(tmp_path / "out" / "session.md")
+
+    monkeypatch.setattr(cli, "_write_export", fake_write_export)
+    cli.interactive()
+    assert exported == ["aaaaaaaa-1"]
+    assert (
+        "1 session(s) in -a-foo-bar belong to a different working tree" in capsys.readouterr().err
+    )
+
+
+def test_merge_all_from_path_scopes_by_that_tree_and_slug_is_face_value(
+    tmp_path: Path, monkeypatch
+) -> None:
+    project_dir, mine, theirs = _collision_archive(tmp_path)
+    _stub_registry(monkeypatch, project_dir, theirs)
+    monkeypatch.setattr(cli, "CLAUDE_PROJECTS", project_dir.parent)
+    monkeypatch.setattr(cli, "project_dir_for_cwd", lambda cwd, claude_home=None: project_dir)
+
+    by_path = tmp_path / "by-path.md"
+    cli.merge(all_from=str(mine), output=by_path)
+    assert (
+        json.loads(by_path.with_suffix(".meta.json").read_text(encoding="utf-8"))["session_count"]
+        == 1
+    )
+
+    by_slug = tmp_path / "by-slug.md"
+    cli.merge(all_from=project_dir.name, output=by_slug)
+    assert (
+        json.loads(by_slug.with_suffix(".meta.json").read_text(encoding="utf-8"))["session_count"]
+        == 2
+    )

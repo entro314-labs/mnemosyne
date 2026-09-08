@@ -27,10 +27,16 @@ from mnemosyne.parser import (
 from mnemosyne.render import RenderOptions, render_markdown, validate_cap
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterable
+    from collections.abc import Callable, Iterable, Mapping
 
     from mnemosyne.config import ProjectEntry, Settings
     from mnemosyne.parser import SessionSummary
+
+    # The working tree that defines each archive directory's scope, keyed by the
+    # directory (slug) name. A ``Path`` filters that directory by recorded ``cwd``;
+    # an explicit ``None`` takes the directory at face value (no filter); a slug
+    # absent from the mapping falls back to the registry's ``local_path``.
+    ProjectPaths = Mapping[str, Path | None]
 
 # Bounded by design — the self_align packet never carries full memory bodies or
 # transcripts (those are pulled on demand via the suggested follow-up calls).
@@ -59,18 +65,32 @@ def session_summary_dict(s: SessionSummary, entry: ProjectEntry | None = None) -
     }
 
 
-def scoped_session_files(project_dir: Path, settings: Settings) -> list[Path]:
-    """Session files for a project, narrowed to its registered working tree.
+def scoped_session_files(
+    project_dir: Path,
+    settings: Settings,
+    *,
+    project_paths: ProjectPaths | None = None,
+) -> list[Path]:
+    """Session files for a project, narrowed to the working tree that defines it.
 
     The slug encoding is not injective (``foo.bar`` and ``foo_bar`` both flatten to
     ``foo-bar``), so one archive directory can hold sessions from unrelated trees.
-    The registry records the authoritative ``local_path``; when it is known,
-    sessions that never worked in that tree are excluded.
+    A session is in scope when it did work at or below the defining tree.
 
-    Falls back to the unfiltered list when the registry has no path for the slug,
-    or when filtering would empty a non-empty directory — a stale ``local_path``
+    ``project_paths`` is the caller's authoritative scope (see ``ProjectPaths``):
+    when it names this directory, that decision is final — a ``Path`` filters with
+    no fallback (an empty result correctly means every session belongs to a
+    sibling tree), and ``None`` returns the directory at face value.
+
+    Otherwise the registry's ``local_path`` is consulted. That path was derived
+    from whichever session was read first, so it is a best-effort guess: it is
+    skipped when the slug is unregistered, and the unfiltered list is returned
+    when filtering would empty a non-empty directory — a stale ``local_path``
     must not make a real archive look like it has no sessions.
     """
+    if project_paths is not None and project_dir.name in project_paths:
+        tree = project_paths[project_dir.name]
+        return list_session_files(project_dir, project_path=tree)
     files = list_session_files(project_dir)
     entry = settings.projects.get(project_dir.name)
     if entry is None or not entry.local_path:
@@ -83,13 +103,16 @@ def recent_sessions(
     project_dir: Path,
     limit: int,
     settings: Settings,
+    *,
+    project_paths: ProjectPaths | None = None,
 ) -> list[dict[str, Any]]:
     """Newest sessions in a project as cheap headers, most-recent first."""
     if limit < 0:
         raise ValueError("limit must be non-negative")
     entry = settings.projects.get(project_dir.name)
+    files = scoped_session_files(project_dir, settings, project_paths=project_paths)
     summaries = sorted(
-        (summarize_session(p) for p in scoped_session_files(project_dir, settings)),
+        (summarize_session(p) for p in files),
         key=lambda s: s.last_timestamp or "",
         reverse=True,
     )
@@ -175,6 +198,8 @@ def search_sessions(
     settings: Settings,
     max_results: int = 10,
     context_chars: int = 200,
+    *,
+    project_paths: ProjectPaths | None = None,
 ) -> list[dict[str, Any]]:
     """Substring search across the transcript-mode render of every session.
 
@@ -196,7 +221,7 @@ def search_sessions(
     hits: list[dict[str, Any]] = []
     for pd in project_dirs:
         entry = settings.projects.get(pd.name)
-        for jsonl in scoped_session_files(pd, settings):
+        for jsonl in scoped_session_files(pd, settings, project_paths=project_paths):
             events = read_session(jsonl)
             text = render_markdown(events, opts=opts)
             idx = text.lower().find(needle)
@@ -248,19 +273,28 @@ def session_handoff(project_dir: Path, session_id: str) -> dict[str, Any]:
     }
 
 
-def local_paths_for(project_dirs: Iterable[Path], settings: Settings) -> list[Path]:
+def local_paths_for(
+    project_dirs: Iterable[Path],
+    settings: Settings,
+    *,
+    project_paths: ProjectPaths | None = None,
+) -> list[Path]:
     """Resolve archive dirs back to their working trees (for cross-tool lookups).
 
-    Uses the registry's ``local_path``; when a dir isn't registered but matches
-    the current working directory's slug, the cwd itself is the answer. Dirs
-    that can't be resolved are skipped — the slug→path mapping is lossy.
+    A tree named in ``project_paths`` is authoritative. Otherwise the registry's
+    ``local_path`` is used; when a dir isn't registered but matches the current
+    working directory's slug, the cwd itself is the answer. Dirs that can't be
+    resolved are skipped — the slug→path mapping is lossy.
     """
     cwd = Path.cwd()
     cwd_slug = project_dir_for_cwd(cwd).name
     out: list[Path] = []
     for pd in project_dirs:
+        explicit = project_paths.get(pd.name) if project_paths is not None else None
         entry = settings.projects.get(pd.name)
-        if entry is not None and entry.local_path:
+        if explicit is not None:
+            out.append(explicit)
+        elif entry is not None and entry.local_path:
             out.append(Path(entry.local_path))
         elif pd.name == cwd_slug:
             out.append(cwd)
@@ -331,6 +365,7 @@ def self_align(
     snippet_chars: int = 180,
     include_codex: bool = True,
     codex_home: Path | None = None,
+    project_paths: ProjectPaths | None = None,
 ) -> dict[str, Any]:
     """A single bounded retrieval packet for self-alignment.
 
@@ -346,12 +381,18 @@ def self_align(
     dirs = list(project_dirs)
     if query:
         memories = search_memories(dirs, query, memory_limit)
-        sessions = search_sessions(dirs, query, settings, session_limit, snippet_chars)
+        sessions = search_sessions(
+            dirs, query, settings, session_limit, snippet_chars, project_paths=project_paths
+        )
     else:
         memories = [m for pd in dirs for m in memory_entries(pd)][:memory_limit]
         sessions = []
 
-    recent = [r for pd in dirs for r in recent_sessions(pd, recent_limit, settings)]
+    recent = [
+        r
+        for pd in dirs
+        for r in recent_sessions(pd, recent_limit, settings, project_paths=project_paths)
+    ]
     recent.sort(key=lambda r: r.get("last_timestamp") or "", reverse=True)
     recent = recent[:recent_limit]
 
@@ -359,7 +400,7 @@ def self_align(
     codex_summaries: list[dict[str, Any]] = []
     if include_codex:
         codex_sessions, codex_summaries = _codex_context(
-            local_paths_for(dirs, settings),
+            local_paths_for(dirs, settings, project_paths=project_paths),
             query=query,
             session_limit=session_limit,
             summary_limit=2,

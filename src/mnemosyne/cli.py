@@ -677,9 +677,15 @@ def interactive(  # noqa: PLR0917
         entry, _ = rows[choice - 1]
 
     slug_dir = CLAUDE_PROJECTS / entry.slug
+    # The workspace was identified by a working tree — the cwd when auto-detected,
+    # the registry path when chosen from the table — so that tree scopes the
+    # archive directory, exactly as `syne list` does.
+    tree = Path.cwd() if not pick else (Path(entry.local_path) if entry.local_path else None)
+    scope = ProjectScope(dir=slug_dir, path=tree)
+    _warn_if_foreign_sessions(scope)
 
     session_summaries = sorted(
-        (summarize_session(p) for p in list_session_files(slug_dir)),
+        (summarize_session(p) for p in scope.session_files()),
         key=lambda s: s.last_timestamp or "",
         reverse=True,
     )
@@ -821,7 +827,8 @@ def export(  # noqa: PLR0917
 ) -> None:
     """Export a single session (by full UUID or unique prefix) to disk."""
     settings = load_settings()
-    pd = _resolve_project_dir(project_dir).dir
+    scope = _resolve_project_dir(project_dir)
+    pd = scope.dir
     path = _resolve_session(pd, session_id)
     summary = summarize_session(path)
     selection = _selection_from(
@@ -875,13 +882,15 @@ def export(  # noqa: PLR0917
         )
         memory_out = output.parent
     else:  # directory
-        all_summaries = [summarize_session(p) for p in list_session_files(pd)]
+        # Disambiguate against the same session set `export-all` writes, so one
+        # session gets one filename regardless of which command exported it.
+        all_summaries = [summarize_session(p) for p in scope.session_files()]
         name_map = _resolve_filenames(all_summaries, fmt=fmt)
         out_path = _write_export(
             summary,
             output,
             opts,
-            filename=name_map[summary.session_id],
+            filename=name_map.get(summary.session_id, _filename_for(summary, fmt=fmt)),
             fmt=fmt,
             project_slug=pd.name,
             project_path=entry.local_path if entry else None,
@@ -1333,9 +1342,10 @@ def merge(  # noqa: PLR0917
         }
         targets = [(s, pd) for (s, pd) in raw_pairs if id(s) in kept]
     elif all_from:
-        pd = _resolve_project_for_merge(all_from)
-        files = list_session_files(pd)
-        summaries = [summarize_session(p) for p in files]
+        scope = _resolve_project_for_merge(all_from)
+        pd = scope.dir
+        _warn_if_foreign_sessions(scope)
+        summaries = [summarize_session(p) for p in scope.session_files()]
         summaries = [summary for summary in summaries if summary.message_count > 0]
         filtered = _apply_filters(summaries, since=since, until=until, matching=matching)
         targets = [(s, pd) for s in filtered]
@@ -1385,25 +1395,39 @@ def merge(  # noqa: PLR0917
     console.print(f"[dim]  sidecar: {sidecar.name}[/dim]")
 
 
-def _resolve_project_for_merge(name_or_path: str) -> Path:
-    """Accept a slug, an absolute project path, or a friendly name from the registry."""
+def _resolve_project_for_merge(name_or_path: str) -> ProjectScope:
+    """Accept a slug, an absolute project path, or a friendly name from the registry.
+
+    A working tree (absolute path, or the registry path behind a friendly name)
+    scopes the archive directory; a bare slug names the directory and is taken
+    at face value, like ``--project-dir``.
+    """
     p = Path(name_or_path)
     if p.is_absolute() and p.is_dir():
-        return project_dir_for_cwd(p) if project_dir_for_cwd(p).is_dir() else p
+        archive = project_dir_for_cwd(p)
+        return (
+            ProjectScope(dir=archive, path=p)
+            if archive.is_dir()
+            else ProjectScope(dir=p, path=None)
+        )
     if p.name == name_or_path and name_or_path.startswith("-") and (CLAUDE_PROJECTS / p).is_dir():
-        return CLAUDE_PROJECTS / name_or_path
+        return ProjectScope(dir=CLAUDE_PROJECTS / name_or_path, path=None)
     # Try friendly_name lookup in the registry.
     settings = load_settings()
     sync_registry(settings)
     matches = [
-        CLAUDE_PROJECTS / entry.slug
+        entry
         for entry in settings.projects.values()
         if entry.friendly_name == name_or_path and (CLAUDE_PROJECTS / entry.slug).is_dir()
     ]
     if len(matches) == 1:
-        return matches[0]
+        entry = matches[0]
+        return ProjectScope(
+            dir=CLAUDE_PROJECTS / entry.slug,
+            path=Path(entry.local_path) if entry.local_path else None,
+        )
     if len(matches) > 1:
-        slugs = ", ".join(path.name for path in matches)
+        slugs = ", ".join(entry.slug for entry in matches)
         raise SystemExit(
             f"error: project name {name_or_path!r} is ambiguous; pass one of these slugs: {slugs}"
         )
@@ -1593,14 +1617,20 @@ def recall(  # noqa: PLR0917
         raise SystemExit("error: --project-dir and --all-projects are mutually exclusive.")
     _ = recent  # recent is the default; the flag exists for explicitness
     settings = load_settings()
+    # Same scope rule as `syne list`: the cwd defines the default scope, an
+    # explicit --project-dir is taken at face value, --all-projects leaves it to
+    # the registry.
+    project_paths: dict[str, Path | None] = {}
     if all_projects:
         dirs = all_project_dirs(CLAUDE_PROJECTS)
     else:
-        pd = project_dir or project_dir_for_cwd(Path.cwd())
+        cwd = Path.cwd()
+        pd = project_dir or project_dir_for_cwd(cwd)
         if not pd.is_dir():
             err_console.print("(no mnemosyne archive for this project)")
             return
         dirs = [pd]
+        project_paths[pd.name] = None if project_dir is not None else cwd
     if bundle:
         print(
             build_bundle(
@@ -1610,6 +1640,7 @@ def recall(  # noqa: PLR0917
                 max_chars=max_chars,
                 fmt=fmt,
                 include_codex=codex,
+                project_paths=project_paths,
             )
         )
         return
@@ -1623,6 +1654,7 @@ def recall(  # noqa: PLR0917
             context_chars=context_chars,
             max_chars=max_chars,
             fmt=fmt,
+            project_paths=project_paths,
         )
     )
 

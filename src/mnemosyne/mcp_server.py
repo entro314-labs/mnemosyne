@@ -20,7 +20,7 @@ Tools:
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from mcp.server.mcpserver import MCPServer
 from mcp.types import ToolAnnotations
@@ -56,6 +56,9 @@ from mnemosyne.query import search_sessions as _query_sessions
 from mnemosyne.query import self_align as _query_self_align
 from mnemosyne.render import Mode, RenderOptions, render_markdown
 
+if TYPE_CHECKING:
+    from mnemosyne.query import ProjectPaths
+
 mcp = MCPServer("mnemosyne", version=__version__)
 
 # Every mnemosyne tool only reads local archives — never writes, never leaves the
@@ -66,22 +69,30 @@ _READ_ONLY = ToolAnnotations(read_only_hint=True, destructive_hint=False, open_w
 # ---- helpers ----
 
 
-def _resolve_project(project: str | None) -> Path:
-    """Accept a slug, an absolute path, or None (use cwd)."""
+def _resolve_scope(project: str | None) -> tuple[Path, Path | None]:
+    """Resolve ``project`` to ``(archive_dir, working_tree)``.
+
+    The working tree is what scopes the archive directory (the slug encoding is
+    lossy, so one directory can hold sessions from sibling trees). It is the cwd
+    when ``project`` is omitted and the path itself when an absolute path is
+    given — both authoritative. A slug names only the directory; its tree is
+    ``None`` and the registry's ``local_path`` is consulted downstream.
+    """
     if project is None:
-        candidate = project_dir_for_cwd(Path.cwd())
+        cwd = Path.cwd()
+        candidate = project_dir_for_cwd(cwd)
         if not candidate.is_dir():
             raise FileNotFoundError(
-                f"No Claude Code project found for cwd ({Path.cwd()}). "
+                f"No Claude Code project found for cwd ({cwd}). "
                 f"Pass `project` as a slug or absolute path."
             )
-        return candidate
+        return candidate, cwd
     p = Path(project)
     if p.is_absolute() and p.is_dir():
         # User passed an absolute local path; map to the Claude slug dir.
         candidate = project_dir_for_cwd(p)
         if candidate.is_dir():
-            return candidate
+            return candidate, p
         raise FileNotFoundError(f"No Claude project recorded for {p}")
     # Treat as a slug, never as a relative filesystem path. Absolute local paths
     # are supported above; allowing separators here would escape CLAUDE_PROJECTS.
@@ -90,16 +101,28 @@ def _resolve_project(project: str | None) -> Path:
     candidate = CLAUDE_PROJECTS / project
     if not candidate.is_dir():
         raise FileNotFoundError(f"Unknown project slug: {project}")
-    return candidate
+    return candidate, None
 
 
-def _resolve_project_scope(project: str | None, *, all_projects: bool) -> list[Path]:
-    """Resolve an explicit all-project scope or the current/specified project."""
+def _resolve_project(project: str | None) -> Path:
+    """Accept a slug, an absolute path, or None (use cwd); return the archive dir."""
+    return _resolve_scope(project)[0]
+
+
+def _resolve_project_scope(
+    project: str | None, *, all_projects: bool
+) -> tuple[list[Path], ProjectPaths]:
+    """Resolve an explicit all-project scope or the current/specified project.
+
+    Returns the archive dirs plus the authoritative working tree per dir (empty
+    when only the registry can say — all-projects, or a slug).
+    """
     if project is not None and all_projects:
         raise ValueError("Pass either `project` or `all_projects=True`, not both.")
     if all_projects:
-        return all_project_dirs(CLAUDE_PROJECTS)
-    return [_resolve_project(project)]
+        return all_project_dirs(CLAUDE_PROJECTS), {}
+    project_dir, tree = _resolve_scope(project)
+    return [project_dir], ({project_dir.name: tree} if tree is not None else {})
 
 
 def _resolve_local_path(project: str | None) -> Path:
@@ -176,8 +199,9 @@ def list_sessions(
             Omit to use the current working directory's project.
         limit: cap on number of sessions returned (default 20).
     """
-    project_dir = _resolve_project(project)
-    return recent_sessions(project_dir, limit, load_settings())
+    project_dir, tree = _resolve_scope(project)
+    project_paths: ProjectPaths = {project_dir.name: tree} if tree is not None else {}
+    return recent_sessions(project_dir, limit, load_settings(), project_paths=project_paths)
 
 
 @mcp.tool(annotations=_READ_ONLY)
@@ -265,8 +289,10 @@ def search_sessions(
         max_results: cap on total matches (default 10).
         context_chars: characters of context to include on either side of the hit.
     """
-    dirs = _resolve_project_scope(project, all_projects=all_projects)
-    return _query_sessions(dirs, query, load_settings(), max_results, context_chars)
+    dirs, project_paths = _resolve_project_scope(project, all_projects=all_projects)
+    return _query_sessions(
+        dirs, query, load_settings(), max_results, context_chars, project_paths=project_paths
+    )
 
 
 def _subagent_dict(ref: SubagentRef) -> dict[str, Any]:
@@ -322,7 +348,7 @@ def search_memories(
         all_projects: explicitly search every project. Cannot be combined with project.
         max_results: cap on total matches (default 10).
     """
-    dirs = _resolve_project_scope(project, all_projects=all_projects)
+    dirs, _ = _resolve_project_scope(project, all_projects=all_projects)
     return _query_memories(dirs, query, max_results)
 
 
@@ -414,10 +440,11 @@ def self_align(
             "what is this project / what was I doing" brief.
         project: slug or absolute path; omit for the cwd's project.
         all_projects: explicitly span every project. Cannot be combined with project.
-        max_chars: soft cap; the packet is trimmed (hits → recent → memories) to fit.
+        max_chars: hard cap; the packet is trimmed (hits → recent → memories) to fit,
+            and a budget too small for the minimum packet is an error.
     """
-    dirs = _resolve_project_scope(project, all_projects=all_projects)
-    packet = _query_self_align(dirs, load_settings(), query=query)
+    dirs, project_paths = _resolve_project_scope(project, all_projects=all_projects)
+    packet = _query_self_align(dirs, load_settings(), query=query, project_paths=project_paths)
     return fit_packet(packet, max_chars)
 
 

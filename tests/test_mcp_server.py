@@ -41,6 +41,11 @@ def fake_claude_home(tmp_path: Path, monkeypatch):
     slug = "-private-tmp-fake-project"
     project_dir = claude_projects / slug
     project_dir.mkdir(parents=True)
+    # The working tree the sessions belong to. The server scopes the cwd's archive
+    # by the cwd itself, so the tests run from inside it.
+    worktree = tmp_path / "fake-project"
+    worktree.mkdir()
+    monkeypatch.chdir(worktree)
 
     # One session: user prompt + assistant reply
     records = [
@@ -49,7 +54,7 @@ def fake_claude_home(tmp_path: Path, monkeypatch):
             "uuid": "u1",
             "parentUuid": None,
             "timestamp": "2026-01-01T00:00:00Z",
-            "cwd": "/private/tmp/fake-project",
+            "cwd": str(worktree),
             "message": {
                 "role": "user",
                 "content": [{"type": "text", "text": "investigate the auth flow please"}],
@@ -123,7 +128,12 @@ def fake_claude_home(tmp_path: Path, monkeypatch):
     config_path = tmp_path / "config.toml"
     monkeypatch.setattr(config, "CONFIG_PATH", config_path)
 
-    return {"slug": slug, "session_id": "abc12345", "project_dir": project_dir}
+    return {
+        "slug": slug,
+        "session_id": "abc12345",
+        "project_dir": project_dir,
+        "worktree": worktree,
+    }
 
 
 def _call(tool):
@@ -145,7 +155,7 @@ def test_list_projects_returns_discovered_entry(fake_claude_home) -> None:
     assert any(p["slug"] == fake_claude_home["slug"] for p in result)
     project = next(p for p in result if p["slug"] == fake_claude_home["slug"])
     assert project["session_count"] == 1
-    assert project["local_path"] == "/private/tmp/fake-project"
+    assert project["local_path"] == str(fake_claude_home["worktree"])
 
 
 def test_list_sessions_returns_summary(fake_claude_home) -> None:
@@ -322,3 +332,62 @@ def test_get_session_handoff(fake_claude_home) -> None:
     )
     assert h["has_handoff"] is True
     assert "Next steps" in h["summary"]
+
+
+# ---- scope: the cwd (or an explicit path) defines the project, not the registry ----
+
+
+def _add_foreign_session(fake_claude_home, tmp_path) -> Path:
+    """A sibling tree whose sessions share the archive dir (lossy slug encoding)."""
+    foreign = tmp_path / "fake_project"
+    foreign.mkdir()
+    (fake_claude_home["project_dir"] / "ffffffff-0000-0000-0000-000000000000.jsonl").write_text(
+        json.dumps(
+            {
+                "type": "user",
+                "uuid": "u9",
+                "timestamp": "2026-02-01T00:00:00Z",
+                "cwd": str(foreign),
+                "message": {"role": "user", "content": [{"type": "text", "text": "JWT elsewhere"}]},
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    return foreign
+
+
+def test_default_scope_is_the_cwd_even_when_the_registry_points_elsewhere(
+    fake_claude_home, tmp_path, monkeypatch
+) -> None:
+    """Regression: a registry local_path derived from a sibling tree must not win."""
+    foreign = _add_foreign_session(fake_claude_home, tmp_path)
+    slug = fake_claude_home["slug"]
+    settings = config.Settings(
+        projects={slug: config.ProjectEntry(slug=slug, local_path=str(foreign))}
+    )
+    monkeypatch.setattr(mcp_server, "load_settings", lambda: settings)
+
+    for rows in (
+        _call(list_sessions)(),
+        _call(recall_recent)(),
+        _call(search_sessions)(query="JWT"),
+        _call(self_align)()["recent_sessions"],
+    ):
+        assert [r["session_id"][:8] for r in rows] == ["abc12345"]
+
+
+def test_absolute_project_path_scopes_by_that_tree(fake_claude_home, tmp_path) -> None:
+    foreign = _add_foreign_session(fake_claude_home, tmp_path)
+    mine = _call(list_sessions)(project=str(fake_claude_home["worktree"]))
+    assert [r["session_id"][:8] for r in mine] == ["abc12345"]
+    theirs = _call(list_sessions)(project=str(foreign))
+    assert [r["session_id"][:8] for r in theirs] == ["ffffffff"]
+
+
+def test_slug_scope_uses_the_registry_and_is_unfiltered_when_unregistered(
+    fake_claude_home, tmp_path
+) -> None:
+    _add_foreign_session(fake_claude_home, tmp_path)
+    rows = _call(list_sessions)(project=fake_claude_home["slug"])
+    assert {r["session_id"][:8] for r in rows} == {"abc12345", "ffffffff"}

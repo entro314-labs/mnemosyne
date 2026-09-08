@@ -142,3 +142,47 @@ def test_bundle_json(tmp_path: Path) -> None:
     assert "suggested_next" in parsed
     assert "guidance" in parsed
     assert parsed["recent_sessions"]
+
+
+def test_recall_scopes_by_explicit_tree_and_takes_directory_at_face_value(tmp_path: Path) -> None:
+    """`syne recall` (cwd) filters by the cwd; `--project-dir` returns the directory as-is."""
+    from mnemosyne.config import ProjectEntry  # noqa: PLC0415
+
+    archive = tmp_path / "-a-foo-bar"
+    archive.mkdir()
+    mine = tmp_path / "foo.bar"
+    mine.mkdir()
+    theirs = tmp_path / "foo_bar"
+    theirs.mkdir()
+    for name, cwd in (("aaaa0000-mine", mine), ("bbbb0000-theirs", theirs)):
+        (archive / f"{name}.jsonl").write_text(
+            json.dumps(
+                {
+                    "type": "user",
+                    "uuid": "u1",
+                    "timestamp": "2026-01-01T00:00:00Z",
+                    "cwd": str(cwd),
+                    "message": {"role": "user", "content": [{"type": "text", "text": name}]},
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+    settings = Settings(
+        projects={archive.name: ProjectEntry(slug=archive.name, local_path=str(theirs))}
+    )
+
+    scoped = json.loads(
+        build_recall([archive], settings, fmt="json", project_paths={archive.name: mine})
+    )
+    assert [r["session_id"] for r in scoped["items"]] == ["aaaa0000-mine"]
+
+    face_value = json.loads(
+        build_recall([archive], settings, fmt="json", project_paths={archive.name: None})
+    )
+    assert {r["session_id"] for r in face_value["items"]} == {"aaaa0000-mine", "bbbb0000-theirs"}
+
+    bundle = json.loads(
+        build_bundle([archive], settings, fmt="json", project_paths={archive.name: mine})
+    )
+    assert [r["session_id"] for r in bundle["recent_sessions"]] == ["aaaa0000-mine"]
