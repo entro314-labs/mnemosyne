@@ -480,25 +480,40 @@ def _write_project_index(
     fmt: Format,
     mode: Mode,
 ) -> Path:
-    """Write `<out_dir>/index.json` summarizing every exported session."""
+    """Write `<out_dir>/index.json` summarizing every exported session.
+
+    The index mirrors the export directory, not just this run: entries from a
+    previous index are kept while their rendered file still exists, so a filtered
+    rerun (``--since``, ``--matching``) refreshes its own sessions without
+    forgetting the rest. An unreadable prior index is derived state we own and is
+    simply rebuilt. ``mode`` / ``format`` describe the run that wrote the file.
+    """
     from datetime import UTC, datetime  # noqa: PLC0415
 
     index_path = out_dir / "index.json"
-    sessions = []
+    by_id: dict[str, dict[str, object]] = {}
+    for row in _prior_index_rows(index_path):
+        prior_id, prior_file = row.get("session_id"), row.get("filename")
+        if (
+            isinstance(prior_id, str)
+            and isinstance(prior_file, str)
+            and (out_dir / prior_file).is_file()
+        ):
+            by_id[prior_id] = row
     for s in summaries:
         filename = name_map.get(s.session_id, _filename_for(s, fmt=fmt))
-        sessions.append(
-            {
-                "session_id": s.session_id,
-                "title": _session_title(s),
-                "filename": filename,
-                "first_timestamp": s.first_timestamp,
-                "last_timestamp": s.last_timestamp,
-                "user_count": s.user_count,
-                "assistant_count": s.assistant_count,
-            }
-        )
-    sessions.sort(key=lambda r: r["last_timestamp"] or "", reverse=True)
+        by_id[s.session_id] = {
+            "session_id": s.session_id,
+            "title": _session_title(s),
+            "filename": filename,
+            "first_timestamp": s.first_timestamp,
+            "last_timestamp": s.last_timestamp,
+            "user_count": s.user_count,
+            "assistant_count": s.assistant_count,
+        }
+    sessions = sorted(
+        by_id.values(), key=lambda r: str(r.get("last_timestamp") or ""), reverse=True
+    )
     payload = {
         "version": 1,
         "generated_at": datetime.now(UTC).isoformat(timespec="seconds"),
@@ -515,6 +530,18 @@ def _write_project_index(
         encoding="utf-8",
     )
     return index_path
+
+
+def _prior_index_rows(index_path: Path) -> list[dict[str, object]]:
+    """Session rows from an existing ``index.json``; empty when absent or unreadable."""
+    if not index_path.is_file():
+        return []
+    try:
+        data = json.loads(index_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+    rows = data.get("sessions") if isinstance(data, dict) else None
+    return [row for row in rows if isinstance(row, dict)] if isinstance(rows, list) else []
 
 
 def _parse_selection(sel: str, n: int) -> list[int]:

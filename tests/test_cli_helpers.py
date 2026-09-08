@@ -362,6 +362,34 @@ def _stub_registry(monkeypatch, project_dir: Path, local_path: Path) -> cli.Sett
     return settings
 
 
+def test_filtered_rerun_keeps_index_entries_whose_exports_still_exist(
+    tmp_path: Path, monkeypatch
+) -> None:
+    project_dir = tmp_path / "-project"
+    project_dir.mkdir()
+    _write_session(project_dir, "aaaaaaaa-1", "Old work", "2026-01-01T00:00:00Z", tmp_path)
+    _write_session(project_dir, "bbbbbbbb-2", "New work", "2026-06-01T00:00:00Z", tmp_path)
+    _stub_registry(monkeypatch, project_dir, tmp_path)
+    output = tmp_path / "out"
+
+    cli.export_all(project_dir=project_dir, output=output)
+    index = json.loads((output / "index.json").read_text(encoding="utf-8"))
+    assert {s["session_id"] for s in index["sessions"]} == {"aaaaaaaa-1", "bbbbbbbb-2"}
+
+    # A narrower rerun refreshes its own sessions but must not forget the rest.
+    cli.export_all(project_dir=project_dir, output=output, since="2026-05-01")
+    index = json.loads((output / "index.json").read_text(encoding="utf-8"))
+    assert {s["session_id"] for s in index["sessions"]} == {"aaaaaaaa-1", "bbbbbbbb-2"}
+    assert index["session_count"] == 2
+
+    # An entry whose rendered file is gone drops out; a corrupt index is rebuilt.
+    (output / "old-work.md").unlink()
+    (output / "index.json").write_text("{not json", encoding="utf-8")
+    cli.export_all(project_dir=project_dir, output=output, since="2026-05-01")
+    index = json.loads((output / "index.json").read_text(encoding="utf-8"))
+    assert [s["session_id"] for s in index["sessions"]] == ["bbbbbbbb-2"]
+
+
 # ---- one session → one filename, whichever command exported it ----
 
 
