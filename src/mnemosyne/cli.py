@@ -1836,7 +1836,10 @@ def codex_list(
 
 
 @app.command(name="codex-export")
-def codex_export(
+# Cyclopts binds POSITIONAL_OR_KEYWORD parameters to CLI positional args, so this
+# signature IS the command's public interface — `*` here would silently break
+# existing invocations. Suppressed per-command rather than globally.
+def codex_export(  # noqa: PLR0917
     session_id: str,
     /,
     output: Annotated[
@@ -1852,11 +1855,12 @@ def codex_export(
         Parameter(help="transcript (default), compact, or full."),
     ] = None,
     max_tool_chars: int | None = None,
+    sidecar: bool = True,
 ) -> None:
     """Export one Codex rollout (by session UUID or unique prefix) to disk.
 
-    Renders through the same pipeline as Claude sessions, so modes, formats, and
-    noise scrubbing behave identically.
+    Renders through the same pipeline as Claude sessions, so modes, formats, noise
+    scrubbing and the `.meta.json` sidecar behave identically.
     """
     settings = load_settings()
     try:
@@ -1875,6 +1879,8 @@ def codex_export(
         out_path = out_dir / _filename_for(summary, fmt=fmt)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(rendered, encoding="utf-8")
+    if sidecar:
+        _write_session_sidecar(summary, out_path, opts, fmt=fmt, project_slug="codex")
     console.print(f"✓ Wrote [green]{out_path}[/green]")
 
 

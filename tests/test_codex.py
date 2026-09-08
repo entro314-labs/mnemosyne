@@ -384,3 +384,24 @@ def test_agent_message_counts_encrypted_parts_instead_of_dumping_them() -> None:
 
 def test_agent_message_with_no_recoverable_content_is_skipped() -> None:
     assert _response_item_blocks({"type": "agent_message", "content": []}) is None
+
+
+def test_codex_export_writes_the_same_sidecar_as_export(
+    codex_home: Path, tmp_path: Path, monkeypatch
+) -> None:
+    """A Codex export is a first-class export: it carries the `.meta.json` sidecar."""
+    from mnemosyne import cli  # noqa: PLC0415
+    from mnemosyne import codex as codex_store  # noqa: PLC0415
+
+    monkeypatch.setattr(codex_store, "CODEX_HOME", codex_home)
+    monkeypatch.setattr(cli, "load_settings", cli.Settings)
+    out = tmp_path / "rollout.md"
+    cli.codex_export(SID, output=out)
+    sidecar = json.loads(out.with_suffix(".meta.json").read_text(encoding="utf-8"))
+    assert sidecar["session_id"] == SID
+    assert sidecar["project_slug"] == "codex"
+    assert sidecar["rendered_file"] == "rollout.md"
+    assert sidecar["source_jsonl"].endswith(f"{SID}.jsonl")
+
+    cli.codex_export(SID, output=tmp_path / "bare.md", sidecar=False)
+    assert not (tmp_path / "bare.meta.json").exists()
