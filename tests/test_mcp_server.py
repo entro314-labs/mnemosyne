@@ -391,3 +391,8 @@ def test_slug_scope_uses_the_registry_and_is_unfiltered_when_unregistered(
     _add_foreign_session(fake_claude_home, tmp_path)
     rows = _call(list_sessions)(project=fake_claude_home["slug"])
     assert {r["session_id"][:8] for r in rows} == {"abc12345", "ffffffff"}
+
+
+def test_get_session_carries_turn_anchors_like_exports(fake_claude_home) -> None:
+    md = _call(get_session)(session_id=fake_claude_home["session_id"])
+    assert '<a id="t-abc12345-0"></a>' in md

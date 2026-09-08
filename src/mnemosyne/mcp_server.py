@@ -248,7 +248,7 @@ def get_session(
         max_tool_result_chars=max_tool_chars,
         max_tool_input_chars=max_tool_chars,
     )
-    return render_markdown(events, title=title, opts=opts)
+    return render_markdown(events, title=title, opts=opts, session_id=summary.session_id)
 
 
 @mcp.tool(annotations=_READ_ONLY)
