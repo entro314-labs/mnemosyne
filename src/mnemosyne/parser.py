@@ -468,14 +468,16 @@ def session_touches_project(path: Path, project_path: Path) -> bool:
     in scope when it did any work at or below the requested root.
 
     Scanning stops at the first match, so the common case (a session that starts
-    in the project) costs one line.
+    in the project) costs one line. Lines without a ``cwd`` key are skipped on a
+    substring check before any JSON decoding — bookkeeping records (file-history
+    snapshots, tool results) can run to many kilobytes and never carry one.
     """
     try:
         with path.open(encoding="utf-8") as f:
             for raw in f:
-                stripped = raw.strip()
-                if not stripped:
+                if '"cwd"' not in raw:
                     continue
+                stripped = raw.strip()
                 try:
                     obj = json.loads(stripped)
                 except json.JSONDecodeError:

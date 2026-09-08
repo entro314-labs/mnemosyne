@@ -53,7 +53,7 @@ from mnemosyne.parser import (
     read_session,
     summarize_session,
 )
-from mnemosyne.query import all_project_dirs
+from mnemosyne.query import all_project_dirs, projects_with_sessions
 from mnemosyne.recall import RecallFormat, build_bundle, build_recall
 from mnemosyne.render import Mode, RenderOptions, render_markdown
 
@@ -569,16 +569,11 @@ def _parse_selection(sel: str, n: int) -> list[int]:
 
 
 def _list_projects_with_sessions(settings: Settings) -> list[tuple[ProjectEntry, int]]:
-    rows: list[tuple[ProjectEntry, int]] = []
-    for entry in settings.projects.values():
-        slug_dir = CLAUDE_PROJECTS / entry.slug
-        if not slug_dir.is_dir():
-            continue
-        n = len(list(slug_dir.glob("*.jsonl")))
-        if n > 0:
-            rows.append((entry, n))
-    rows.sort(key=lambda r: (r[0].last_used or "", r[1]), reverse=True)
-    return rows
+    """Projects with in-scope sessions; the cwd scopes its own slug, the registry the rest."""
+    cwd = Path.cwd()
+    return projects_with_sessions(
+        settings, CLAUDE_PROJECTS, project_paths={project_dir_for_cwd(cwd).name: cwd}
+    )
 
 
 def _render_project_table(rows: list[tuple[ProjectEntry, int]]) -> None:

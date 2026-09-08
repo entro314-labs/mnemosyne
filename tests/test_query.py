@@ -353,3 +353,30 @@ def test_long_first_prompt_is_excerpted_in_headers_but_not_in_summaries(tmp_path
     packet = fit_packet(self_align([pd], Settings()), 6000)
     assert [r["session_id"] for r in packet["recent_sessions"]] == [SESSION_ID]
     assert any("get_session_handoff(" in s["call"] for s in packet["suggested_next"])
+
+
+# ---- project counts and excluded-session reporting follow the same scope ----
+
+
+def test_projects_with_sessions_counts_the_scoped_set(tmp_path: Path) -> None:
+    from mnemosyne.query import excluded_session_count, projects_with_sessions  # noqa: PLC0415
+
+    archive, mine, theirs = _collision(tmp_path)
+    settings = _registry(archive, theirs)
+    # Registry-scoped: the registered tree owns one session.
+    assert [(e.slug, n) for e, n in projects_with_sessions(settings, tmp_path)] == [
+        (archive.name, 1)
+    ]
+    # The cwd override wins for its own slug and counts the other session.
+    rows = projects_with_sessions(settings, tmp_path, project_paths={archive.name: mine})
+    assert [(e.slug, n) for e, n in rows] == [(archive.name, 1)]
+    assert excluded_session_count(archive, settings, project_paths={archive.name: mine}) == 1
+    assert excluded_session_count(archive, settings, project_paths={archive.name: None}) == 0
+
+
+def test_self_align_reports_excluded_sessions(tmp_path: Path) -> None:
+    archive, mine, _ = _collision(tmp_path)
+    packet = self_align([archive], Settings(), project_paths={archive.name: mine})
+    assert packet["excluded_sessions"] == 1
+    assert [r["session_id"] for r in packet["recent_sessions"]] == ["aaaa0000-mine"]
+    assert fit_packet(packet, 6000)["excluded_sessions"] == 1

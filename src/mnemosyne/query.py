@@ -121,6 +121,45 @@ def scoped_session_files(
     return scoped if scoped else files
 
 
+def excluded_session_count(
+    project_dir: Path,
+    settings: Settings,
+    *,
+    project_paths: ProjectPaths | None = None,
+) -> int:
+    """Sessions in the directory that fall outside its scope (sibling working trees).
+
+    The complement of :func:`scoped_session_files`, so callers can report what a
+    scope excluded instead of hiding it.
+    """
+    total = len(list_session_files(project_dir))
+    return total - len(scoped_session_files(project_dir, settings, project_paths=project_paths))
+
+
+def projects_with_sessions(
+    settings: Settings,
+    claude_projects: Path,
+    *,
+    project_paths: ProjectPaths | None = None,
+) -> list[tuple[ProjectEntry, int]]:
+    """Registered projects that have at least one in-scope session, most recently used first.
+
+    The count is the same scoped set ``recent_sessions`` / ``search_sessions``
+    would return for that project, so a project listing never claims sessions
+    that its own listing would then exclude.
+    """
+    rows: list[tuple[ProjectEntry, int]] = []
+    for entry in settings.projects.values():
+        slug_dir = claude_projects / entry.slug
+        if not slug_dir.is_dir():
+            continue
+        n = len(scoped_session_files(slug_dir, settings, project_paths=project_paths))
+        if n > 0:
+            rows.append((entry, n))
+    rows.sort(key=lambda r: (r[0].last_used or "", r[1]), reverse=True)
+    return rows
+
+
 def recent_sessions(
     project_dir: Path,
     limit: int,
@@ -415,6 +454,7 @@ def self_align(
         for pd in dirs
         for r in recent_sessions(pd, recent_limit, settings, project_paths=project_paths)
     ]
+    excluded = sum(excluded_session_count(pd, settings, project_paths=project_paths) for pd in dirs)
     recent.sort(key=lambda r: r.get("last_timestamp") or "", reverse=True)
     recent = recent[:recent_limit]
 
@@ -479,6 +519,7 @@ def self_align(
         "query": query,
         "memories": memories,
         "recent_sessions": recent,
+        "excluded_sessions": excluded,
         "session_hits": sessions,
         "codex_sessions": codex_sessions,
         "codex_summaries": codex_summaries,

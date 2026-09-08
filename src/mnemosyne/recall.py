@@ -102,14 +102,21 @@ def _gather(
     return "recent", recent[:limit]
 
 
-def _render_markdown(kind: str, rows: list[dict[str, Any]], *, multi_project: bool) -> str:
+def _excluded_line(n: int) -> str:
+    return f"_{n} session{'s' if n != 1 else ''} from a sibling working tree excluded._"
+
+
+def _render_markdown(
+    kind: str, rows: list[dict[str, Any]], *, multi_project: bool, excluded: int = 0
+) -> str:
     if not rows:
-        return {
+        empty = {
             "recent": "_No recent sessions found._",
             "memory_index": "_No curated memories for this project._",
             "memory_search": "_No matching memories._",
             "session_search": "_No matching sessions._",
         }.get(kind, "_Nothing found._")
+        return f"{empty}\n{_excluded_line(excluded)}" if excluded else empty
 
     def proj(r: dict[str, Any]) -> str:
         slug = r.get("project_slug") or r.get("project_name")
@@ -141,6 +148,8 @@ def _render_markdown(kind: str, rows: list[dict[str, Any]], *, multi_project: bo
                 f"- `{r['session_id'][:8]}` · {_short(r.get('title'))}{proj(r)}\n"
                 f"  …{_short(r.get('snippet'), 200)}…"
             )
+    if excluded:
+        lines.append(_excluded_line(excluded))
     return "\n".join(lines)
 
 
@@ -153,6 +162,8 @@ def _render_bundle(p: dict[str, Any]) -> str:
         meta.append(f'query "{p["query"]}"')
     if meta:
         lines.append("_" + " · ".join(meta) + "_")
+    if p.get("excluded_sessions"):
+        lines.append(_excluded_line(int(p["excluded_sessions"])))
     multi_project = len(p.get("project_slugs", [])) > 1
 
     def project_suffix(row: dict[str, Any]) -> str:
@@ -269,6 +280,17 @@ def build_recall(
         context_chars=context_chars,
         project_paths=project_paths,
     )
+    # Memory kinds never touch sessions, so nothing was excluded from them.
+    excluded = 0
+    if kind in {"recent", "session_search"}:
+        excluded = sum(
+            query.excluded_session_count(pd, settings, project_paths=project_paths) for pd in dirs
+        )
     if fmt == "json":
-        return _capped_json({"kind": kind, "items": rows}, max_chars)
-    return _cap(_render_markdown(kind, rows, multi_project=len(dirs) != 1), max_chars)
+        payload: dict[str, Any] = {"kind": kind, "items": rows}
+        if excluded:
+            payload["excluded_sessions"] = excluded
+        return _capped_json(payload, max_chars)
+    return _cap(
+        _render_markdown(kind, rows, multi_project=len(dirs) != 1, excluded=excluded), max_chars
+    )

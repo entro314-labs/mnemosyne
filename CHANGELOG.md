@@ -57,6 +57,11 @@ sources it came from.
   (`--no-sidecar` to skip), and `syne align` checks the configured `output_dir`
   for exports rather than assuming `.mnemosyne-exports/`.
 - `get_session` (MCP) now emits per-turn anchors like exports and `get_subagent`.
+- `list_projects` (MCP) and the interactive project chooser counted every file in
+  a slug directory, so a project could claim sessions that `list_sessions` then
+  excluded. Both now count the scoped set. The self-align packet and `syne
+  recall` brief carry an `excluded_sessions` count, so a filtered scope is never
+  silent on any surface.
 - **Project archives whose path contains `.` or `_` were invisible.** Claude Code
   flattens `/`, `.` and `_` to `-` when naming a slug directory; mnemosyne replaced
   only `/`, so it computed a directory that does not exist and reported "no

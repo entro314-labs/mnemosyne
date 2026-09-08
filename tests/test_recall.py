@@ -186,3 +186,43 @@ def test_recall_scopes_by_explicit_tree_and_takes_directory_at_face_value(tmp_pa
         build_bundle([archive], settings, fmt="json", project_paths={archive.name: mine})
     )
     assert [r["session_id"] for r in bundle["recent_sessions"]] == ["aaaa0000-mine"]
+
+
+def test_recall_and_bundle_surface_excluded_sessions(tmp_path: Path) -> None:
+    """The hook brief and `syne recall` say what the scope excluded, never hide it."""
+    archive = tmp_path / "-a-foo-bar"
+    archive.mkdir()
+    mine = tmp_path / "foo.bar"
+    mine.mkdir()
+    theirs = tmp_path / "foo_bar"
+    theirs.mkdir()
+    for name, cwd in (("aaaa0000-mine", mine), ("bbbb0000-theirs", theirs)):
+        (archive / f"{name}.jsonl").write_text(
+            json.dumps(
+                {
+                    "type": "user",
+                    "uuid": "u1",
+                    "timestamp": "2026-01-01T00:00:00Z",
+                    "cwd": str(cwd),
+                    "message": {"role": "user", "content": [{"type": "text", "text": name}]},
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+    paths = {archive.name: mine}
+    assert "1 session from a sibling working tree excluded" in build_bundle(
+        [archive], Settings(), project_paths=paths
+    )
+    assert "1 session from a sibling working tree excluded" in build_recall(
+        [archive], Settings(), project_paths=paths
+    )
+    parsed = json.loads(build_recall([archive], Settings(), fmt="json", project_paths=paths))
+    assert parsed["excluded_sessions"] == 1
+    # Memory-only recalls touch no sessions, so they report nothing.
+    memories = json.loads(
+        build_recall([archive], Settings(), memories=True, fmt="json", project_paths=paths)
+    )
+    assert "excluded_sessions" not in memories
+    # Face value excludes nothing.
+    assert "excluded" not in build_bundle([archive], Settings(), project_paths={archive.name: None})

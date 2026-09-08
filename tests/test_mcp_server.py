@@ -396,3 +396,14 @@ def test_slug_scope_uses_the_registry_and_is_unfiltered_when_unregistered(
 def test_get_session_carries_turn_anchors_like_exports(fake_claude_home) -> None:
     md = _call(get_session)(session_id=fake_claude_home["session_id"])
     assert '<a id="t-abc12345-0"></a>' in md
+
+
+def test_list_projects_count_matches_list_sessions_scope(fake_claude_home, tmp_path) -> None:
+    _add_foreign_session(fake_claude_home, tmp_path)
+    project = next(p for p in _call(list_projects)() if p["slug"] == fake_claude_home["slug"])
+    assert project["session_count"] == len(_call(list_sessions)()) == 1
+
+
+def test_self_align_packet_reports_excluded_sessions(fake_claude_home, tmp_path) -> None:
+    _add_foreign_session(fake_claude_home, tmp_path)
+    assert _call(self_align)()["excluded_sessions"] == 1

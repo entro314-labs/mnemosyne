@@ -47,6 +47,7 @@ from mnemosyne.query import (
     local_paths_for,
     memory_detail,
     memory_entries,
+    projects_with_sessions,
     recent_sessions,
     session_handoff,
     session_summary_dict,
@@ -175,15 +176,12 @@ def list_projects() -> list[dict[str, Any]]:
     """
     settings = load_settings()
     sync_registry(settings)
-    rows: list[tuple[ProjectEntry, int]] = []
-    for entry in settings.projects.values():
-        slug_dir = CLAUDE_PROJECTS / entry.slug
-        if not slug_dir.is_dir():
-            continue
-        n = len(list(slug_dir.glob("*.jsonl")))
-        if n > 0:
-            rows.append((entry, n))
-    rows.sort(key=lambda r: (r[0].last_used or "", r[1]), reverse=True)
+    # The cwd is authoritative for its own slug; every other project is scoped
+    # by its registered working tree, exactly as list_sessions would scope it.
+    cwd = Path.cwd()
+    rows = projects_with_sessions(
+        settings, CLAUDE_PROJECTS, project_paths={project_dir_for_cwd(cwd).name: cwd}
+    )
     return [_project_dict(e, n) for e, n in rows]
 
 
