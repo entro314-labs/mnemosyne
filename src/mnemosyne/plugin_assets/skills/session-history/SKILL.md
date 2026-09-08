@@ -16,8 +16,8 @@ workflow calls. The user's past work across all their projects is queryable.
 - `list_projects()` — every project with sessions, sorted most-recent-used.
 - `list_sessions(project?, limit=20)` — newest sessions in a project. `project`
   accepts a slug or absolute path; omit to use the current cwd's project.
-- `get_session_summary(session_id, project?)` — cheap header (title, first
-  prompt, timestamps, message counts) without loading the transcript.
+- `get_session_summary(session_id, project?)` — cheap header (title, a ≤300-char
+  first-prompt excerpt, timestamps, message counts) without loading the transcript.
 - `get_session(session_id, project?, mode="transcript", max_tool_chars=2000)` —
   full rendered markdown. Modes: `transcript` (prose only — default and
   cheapest), `compact` (+ one-line tool summaries), `full` (verbatim).

@@ -317,3 +317,39 @@ def test_local_paths_for_prefers_the_explicit_tree(tmp_path: Path) -> None:
     assert local_paths_for([archive], settings, project_paths={archive.name: mine}) == [mine]
     # Face value carries no tree: fall through to the registry.
     assert local_paths_for([archive], settings, project_paths={archive.name: None}) == [theirs]
+
+
+# ---- headers are pointers, not content: a huge first prompt must not empty the packet ----
+
+
+def test_long_first_prompt_is_excerpted_in_headers_but_not_in_summaries(tmp_path: Path) -> None:
+    from mnemosyne.parser import summarize_session  # noqa: PLC0415
+    from mnemosyne.query import HEADER_EXCERPT_CHARS  # noqa: PLC0415
+
+    pd = tmp_path / "-proj"
+    pd.mkdir()
+    long_prompt = "audit everything " * 700  # ~12k chars, no AI title
+    (pd / f"{SESSION_ID}.jsonl").write_text(
+        json.dumps(
+            {
+                "type": "user",
+                "uuid": "u1",
+                "timestamp": "2026-01-01T00:00:00Z",
+                "message": {"role": "user", "content": [{"type": "text", "text": long_prompt}]},
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    summary = summarize_session(pd / f"{SESSION_ID}.jsonl")
+    assert summary.first_user_text is not None
+    assert len(summary.first_user_text) > HEADER_EXCERPT_CHARS  # the source keeps it all
+
+    header = session_summary_dict(summary)
+    assert len(header["first_prompt"]) <= HEADER_EXCERPT_CHARS
+    assert header["first_prompt"].endswith("…")
+    assert len(header["title"]) <= HEADER_EXCERPT_CHARS
+
+    packet = fit_packet(self_align([pd], Settings()), 6000)
+    assert [r["session_id"] for r in packet["recent_sessions"]] == [SESSION_ID]
+    assert any("get_session_handoff(" in s["call"] for s in packet["suggested_next"])

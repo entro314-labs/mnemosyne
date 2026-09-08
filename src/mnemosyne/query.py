@@ -48,12 +48,34 @@ _ALIGN_GUIDANCE = (
 )
 
 
+# A header row is a pointer to a session, not its content. A pasted first prompt
+# can run to thousands of characters, and one such row would consume a whole
+# self-align budget — dropping every recent session from the packet — so header
+# text is an excerpt. Exports (sidecars, index.json) keep the full prompt.
+HEADER_EXCERPT_CHARS = 300
+
+
+def header_excerpt(text: str | None, limit: int = HEADER_EXCERPT_CHARS) -> str | None:
+    """Whitespace-collapsed excerpt of ``text`` for header rows; ``None`` stays ``None``."""
+    if text is None:
+        return None
+    collapsed = " ".join(text.split())
+    if len(collapsed) <= limit:
+        return collapsed
+    return collapsed[: limit - 1].rstrip() + "…"
+
+
+def session_title(s: SessionSummary) -> str:
+    """Header title: the AI title, else an excerpt of the first prompt, else the id."""
+    return s.ai_title or header_excerpt(s.first_user_text) or s.session_id
+
+
 def session_summary_dict(s: SessionSummary, entry: ProjectEntry | None = None) -> dict[str, Any]:
-    """Cheap header dict for one session (no transcript loading)."""
+    """Cheap header dict for one session (no transcript loading, bounded text)."""
     return {
         "session_id": s.session_id,
-        "title": s.ai_title or s.first_user_text or s.session_id,
-        "first_prompt": s.first_user_text,
+        "title": session_title(s),
+        "first_prompt": header_excerpt(s.first_user_text),
         "first_timestamp": s.first_timestamp,
         "last_timestamp": s.last_timestamp,
         "user_count": s.user_count,
@@ -234,7 +256,7 @@ def search_sessions(
             hits.append(
                 {
                     "session_id": summary.session_id,
-                    "title": summary.ai_title or summary.first_user_text or summary.session_id,
+                    "title": session_title(summary),
                     "project_slug": pd.name,
                     "project_name": entry.friendly_name if entry else pd.name.lstrip("-"),
                     "last_timestamp": summary.last_timestamp,
