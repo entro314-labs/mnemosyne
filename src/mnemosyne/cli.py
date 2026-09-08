@@ -1739,10 +1739,10 @@ def align(  # noqa: PLR0917
         raise SystemExit("error: --claude-only and --agents-only are mutually exclusive.")
     files = target_files(local, claude=not agents_only, agents=not claude_only)
 
-    if not remove and not force and not is_available(local):
+    if not remove and not force and not is_available(local, export_dir=_export_dir_for(local)):
         err_console.print(
             f"no archive to align against for {local}\n"
-            "  (no sessions, no .mnemosyne-exports/, no curated memories for this project).\n"
+            "  (no sessions, no exports, no curated memories for this project).\n"
             "  the directive would claim an archive that doesn't exist — run a session or\n"
             "  an export first, or pass --force to pre-wire a new project."
         )
@@ -1759,6 +1759,16 @@ def align(  # noqa: PLR0917
         outcome = apply_to_file(f, remove=remove)
         style, label = labels[outcome]
         console.print(f"[{style}]{label}[/{style}] {f}")
+
+
+def _export_dir_for(local: Path) -> Path:
+    """Where this project's exports land under the configured ``output_dir`` template."""
+    settings = load_settings()
+    slug = project_dir_for_cwd(local).name
+    entry = settings.projects.get(slug) or ProjectEntry(slug=slug, local_path=str(local))
+    if not entry.local_path:
+        entry = ProjectEntry(slug=slug, local_path=str(local))
+    return resolve_output_dir(settings.defaults.output_dir, entry=entry)
 
 
 @app.command

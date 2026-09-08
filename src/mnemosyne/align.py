@@ -169,7 +169,12 @@ def apply_to_file(path: Path, *, remove: bool = False) -> Outcome:
     return "written" if existed else "created"
 
 
-def is_available(local_path: Path, *, claude_home: Path | None = None) -> bool:
+def is_available(
+    local_path: Path,
+    *,
+    claude_home: Path | None = None,
+    export_dir: Path | None = None,
+) -> bool:
     """True when THIS project actually has an archive to recall.
 
     The directive claims "this project has a searchable archive", so it is only
@@ -177,9 +182,12 @@ def is_available(local_path: Path, *, claude_home: Path | None = None) -> bool:
     memories. A globally installed plugin is deliberately NOT sufficient — it
     proves the tools exist, not that this project has anything to recall
     (``--force`` still overrides, e.g. to pre-wire a brand-new project).
+
+    ``export_dir`` is where this project's exports land under the configured
+    ``output_dir`` template; it defaults to the template's default location.
     """
     home = claude_home or (Path.home() / ".claude")
-    if _has_export_artifacts(local_path / ".mnemosyne-exports"):
+    if _has_export_artifacts(export_dir or (local_path / ".mnemosyne-exports")):
         return True
     slug_dir = project_dir_for_cwd(local_path, claude_home=home / "projects")
     if slug_dir.is_dir() and any(slug_dir.glob("*.jsonl")):

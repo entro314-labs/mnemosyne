@@ -237,3 +237,16 @@ def test_apply_to_both_targets(tmp_path: Path) -> None:
     assert outcomes == ["created", "created"]
     assert (tmp_path / "CLAUDE.md").is_file()
     assert (tmp_path / "AGENTS.md").is_file()
+
+
+def test_gate_honors_a_configured_export_dir(tmp_path: Path) -> None:
+    """`output_dir` is a template; the gate must look where exports actually land."""
+    local = tmp_path / "proj"
+    local.mkdir()
+    home = tmp_path / "claude"
+    (home / "projects").mkdir(parents=True)
+    elsewhere = tmp_path / "archive" / "proj"
+    elsewhere.mkdir(parents=True)
+    (elsewhere / "session.md").write_text("# transcript\n", encoding="utf-8")
+    assert is_available(local, claude_home=home) is False
+    assert is_available(local, claude_home=home, export_dir=elsewhere) is True
