@@ -142,7 +142,7 @@ tool output is scrubbed; only workflow scripts are copied verbatim (they're code
 A `syne export-all --full` lands like this (artifact bundles only appear for the
 categories you enable):
 
-```
+```tree
 <project>/.mnemosyne-exports/
 ├── fix-godot-spawn-location.md             # rendered transcript
 ├── fix-godot-spawn-location.meta.json      # per-session metadata sidecar
