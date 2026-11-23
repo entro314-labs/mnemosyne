@@ -38,7 +38,7 @@ classifiers = [
 # (pydantic-core, starlette, uvicorn, idna, …) resolve automatically — pinning
 # them here previously forced an unsatisfiable pydantic-core/pydantic conflict.
 dependencies = [
-    "cyclopts==5.0.0b1",
+    "cyclopts==5.5.2",
     "mcp>=2.0.0",
     "rich>=15.0",
     "tomli-w>=1.2.0",
@@ -71,9 +71,6 @@ include = [
 ]
 
 [tool.uv]
-# cyclopts 5.x is currently published as a pre-release; allow pre-releases without
-# requiring --prerelease=allow on every invocation.
-prerelease = "allow"
 # Transitive-only security floor. cryptography arrives via mcp → pyjwt; 49.0.0 is
 # affected by GHSA-g6cj-pr64-35w5 (PKCS#7 EnvelopedData Bleichenbacher oracle),
 # fixed in 50.0.0. mnemosyne never calls the affected API, but the vulnerable

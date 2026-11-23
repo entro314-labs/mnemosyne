@@ -124,6 +124,10 @@ sources it came from.
   workflows on the same versions, and pin the `uv` version explicitly.
 
 ### Toolchain
+- `cyclopts` 5.0.0b1 → 5.5.2, the first stable 5.x pin; the project no longer
+  opts in to pre-releases when resolving. The lock is refreshed to current
+  releases, which clears the advisories `uv audit` reported against `anyio`,
+  `httpx2`, `mcp`, `opentelemetry-api` and `pyjwt`.
 - `cyclopts` 5.0.0a7 → 5.0.0b1; MCP SDK → 2.x; `hatchling` floor-pinned so a
   release build cannot resolve an older backend than was validated.
 - CI now exercises the full declared `requires-python` range (3.13 and 3.14)
