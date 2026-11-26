@@ -38,7 +38,7 @@ classifiers = [
 # (pydantic-core, starlette, uvicorn, idna, …) resolve automatically — pinning
 # them here previously forced an unsatisfiable pydantic-core/pydantic conflict.
 dependencies = [
-    "cyclopts==5.5.2",
+    "cyclopts==5.5.3",
     "mcp>=2.0.0",
     "rich>=15.0",
     "tomli-w>=1.2.0",
